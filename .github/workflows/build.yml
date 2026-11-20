@@ -16,6 +16,7 @@ jobs:
       - name: Clone & Build tg_bridge
         run: |
           git clone --depth 1 https://github.com/mesamirh/MovieBox-Tui.git
+          mkdir -p MovieBox-Tui/src/bin
           cp tg_bridge.rs MovieBox-Tui/src/bin/tg_bridge.rs
           cd MovieBox-Tui
           cargo build --release --bin tg_bridge
