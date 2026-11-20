@@ -36,18 +36,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
             intent_link = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
             vlc_link = f"vlc://{stream_url}"
             dl_link = f"{BASE_URL}/dl/{sid}"
+            is_mpd = ".mpd" in info["url"]
+            dash_js = '<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>' if is_mpd else ""
+            dash_init = f'<script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{stream_url}",true);</script>' if is_mpd else ""
+            src_attr = "" if is_mpd else f'src="{stream_url}"'
             page = f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(info['title'])}</title>
+<title>{html.escape(info['title'])}</title>{dash_js}
 <style>body{{background:#0f172a;color:#fff;font-family:sans-serif;text-align:center;padding:20px}}
 video{{width:100%;max-width:640px;border-radius:12px;background:#000;margin:12px 0}}
 .btn{{display:block;max-width:320px;margin:12px auto;padding:15px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:17px}}
 .v{{background:#f97316;color:#fff}}.v2{{background:#3b82f6;color:#fff}}.d{{background:#22c55e;color:#fff}}</style></head>
 <body><h3>🎬 {html.escape(info['title'])}</h3><p>{html.escape(info['qual'])}</p>
-<video controls autoplay playsinline src="{stream_url}"></video>
+<video id="v" controls autoplay playsinline {src_attr}></video>{dash_init}
 <a class="btn v" href="{intent_link}">▶️ Open in VLC App</a>
 <a class="btn v2" href="{vlc_link}">🔗 VLC Direct Link</a>
-<a class="btn d" href="{dl_link}">⬇️ Download MP4</a>
-<p style="font-size:12px;color:#94a3b8">Tip: If VLC doesn't open inside Telegram, tap ⋮ → Open in Chrome</p>
+<a class="btn d" href="{dl_link}">⬇️ Download Video</a>
+<p style="font-size:12px;color:#94a3b8">Tip: For VLC App inside Telegram, tap ⋮ → Open in Chrome</p>
 </body></html>"""
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(page.encode()); return
@@ -78,6 +82,12 @@ def load_users(): return set(json.load(open(DB))) if os.path.exists(DB) else {AD
 def save_users(u): json.dump(list(u), open(DB, "w"))
 def allowed(uid): return uid == ADMIN_ID or uid in load_users()
 
+async def safe_edit(q, text, markup=None):
+    if q.message.photo:
+        await q.edit_message_caption(caption=text[:1020], reply_markup=markup, parse_mode="HTML")
+    else:
+        await q.edit_message_text(text=text[:4090], reply_markup=markup, parse_mode="HTML")
+
 async def run_bridge(*args):
     res = await asyncio.to_thread(subprocess.run, [BRIDGE, *args], capture_output=True, text=True, timeout=90)
     if res.returncode != 0: return {"error": res.stderr[:800] or "Bridge error"}
@@ -86,7 +96,7 @@ async def run_bridge(*args):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if allowed(uid):
-        await update.message.reply_text(f"🎬 <b>MovieBox Stream Bot Ready!</b>\nSend any movie/series name (e.g. <code>Avatar</code>) or <code>/movie Avengers</code>.{FOOTER}", parse_mode="HTML")
+        await update.message.reply_text(f"🎬 <b>MovieBox Pro Bot Ready!</b>\n• Send any movie/series name\n• <code>/movie Avengers</code>\n• <code>/trending</code> — Latest trending titles{FOOTER}", parse_mode="HTML")
     else:
         await update.message.reply_text(f"🔒 <b>Access Denied</b>\nSend your ID to Admin: <code>{uid}</code>{FOOTER}", parse_mode="HTML")
 
@@ -104,26 +114,40 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     await update.message.reply_text("👥 Allowed IDs: " + ", ".join(map(str, sorted(load_users()))))
 
+def results_kb(results, prov=None):
+    kb = []
+    if prov:
+        kb.append([InlineKeyboardButton(f"{'✅ ' if k == prov else ''}{lbl}", callback_data=f"p:{k}") for k, lbl in PROVIDERS[:3]])
+        kb.append([InlineKeyboardButton(f"{'✅ ' if k == prov else ''}{lbl}", callback_data=f"p:{k}") for k, lbl in PROVIDERS[3:]])
+    for i, item in enumerate(results):
+        yr = f" ({item['year']})" if item.get("year") else ""
+        tp = "📺" if "Series" in str(item.get("type", "")) else "🎬"
+        kb.append([InlineKeyboardButton(f"{tp} {item['title']}{yr}"[:60], callback_data=f"m:{i}")])
+    return InlineKeyboardMarkup(kb)
+
 async def do_search(msg_obj, uid, query, prov="moviebox", edit=False):
     SESSIONS[uid] = {"query": query, "prov": prov}
     data = await run_bridge("search", prov, query)
     results = data.get("results", [])[:10]
     SESSIONS[uid]["results"] = results
-    r1 = [InlineKeyboardButton(f"{'✅ ' if k == prov else ''}{lbl}", callback_data=f"p:{k}") for k, lbl in PROVIDERS[:3]]
-    r2 = [InlineKeyboardButton(f"{'✅ ' if k == prov else ''}{lbl}", callback_data=f"p:{k}") for k, lbl in PROVIDERS[3:]]
-    kb = [r1, r2]
     if data.get("error"):
         text = f"🔎 <b>{esc(query)}</b> • <code>{prov}</code>\n❌ {esc(data['error'])}{FOOTER}"
     elif not results:
         text = f"🔎 <b>{esc(query)}</b> • <code>{prov}</code>\n😕 No results found. Try another server:{FOOTER}"
     else:
         text = f"🍿 <b>Search Results</b> • <code>{prov}</code>\n🔎 <i>{esc(query)}</i>\n\nPick a title below:{FOOTER}"
-        for i, item in enumerate(results):
-            yr = f" ({item['year']})" if item.get("year") else ""
-            tp = "📺" if "Series" in str(item.get("type", "")) else "🎬"
-            kb.append([InlineKeyboardButton(f"{tp} {item['title']}{yr}"[:60], callback_data=f"m:{i}")])
-    markup = InlineKeyboardMarkup(kb)
+    markup = results_kb(results, prov)
     await (msg_obj.edit_text(text, reply_markup=markup, parse_mode="HTML") if edit else msg_obj.reply_text(text, reply_markup=markup, parse_mode="HTML"))
+
+async def trending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not allowed(uid): return
+    data = await run_bridge("trending")
+    results = data.get("results", [])
+    SESSIONS[uid] = {"query": "Trending", "prov": "moviebox", "results": results}
+    if not results:
+        await update.message.reply_text(f"❌ Could not load trending.{FOOTER}", parse_mode="HTML"); return
+    await update.message.reply_text(f"🔥 <b>Trending Movies & Series</b>\nPick a title:{FOOTER}", reply_markup=results_kb(results), parse_mode="HTML")
 
 async def movie_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update.effective_user.id): return
@@ -142,21 +166,34 @@ def fmt_stream(s):
     fmt = " [MPD]" if ".mpd" in s.get("url", "") else " [MP4]"
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
 
-def quality_kb(streams):
-    return InlineKeyboardMarkup([[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])])
+def quality_kb(streams, back="back:res"):
+    kb = [[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])]
+    kb.append([InlineKeyboardButton("⬅️ Back", callback_data=back)])
+    return InlineKeyboardMarkup(kb)
+
+def info_header(d):
+    parts = [f"🎬 <b>{esc(d.get('title'))}</b>"]
+    meta = [x for x in (d.get("year"), f"⭐ {d['rating']}" if d.get("rating") else None, d.get("duration")) if x]
+    if meta: parts.append(" • ".join(map(esc, meta)))
+    if d.get("plot"): parts.append(f"<i>{esc(d['plot'][:220])}...</i>")
+    return "\n".join(parts)
 
 async def show_details(q, sess, d):
+    sess["details"] = d
+    hdr = info_header(d)
     seasons = d.get("seasons", [])
     if seasons:
         sess["seasons"] = seasons
         kb = [[InlineKeyboardButton(f"📂 Season {s['number']} ({len(s['episodes'])} eps)", callback_data=f"s:{i}")] for i, s in enumerate(seasons)]
-        await q.edit_message_text(f"📺 <b>{esc(d['title'])}</b>\nChoose a season:{FOOTER}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back:res")])
+        await safe_edit(q, f"{hdr}\n\nChoose a season:{FOOTER}", InlineKeyboardMarkup(kb))
     else:
         streams = d.get("streams", [])
         sess["streams"] = streams
+        sess["captions"] = d.get("captions", [])
         if not streams:
-            await q.edit_message_text(f"❌ <b>No streams found.</b>\nTry another provider.{FOOTER}", parse_mode="HTML"); return
-        await q.edit_message_text(f"🎬 <b>{esc(d['title'])}</b>\nSelect stream quality:{FOOTER}", reply_markup=quality_kb(streams), parse_mode="HTML")
+            await safe_edit(q, f"{hdr}\n\n❌ <b>No streams found.</b> Try another provider.{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
+        await safe_edit(q, f"{hdr}\n\nSelect stream quality:{FOOTER}", quality_kb(streams))
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -168,28 +205,34 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if data.startswith("p:"):
             prov = data.split(":", 1)[1]
-            await q.edit_message_text(f"⚡ Searching on <code>{prov}</code>...{FOOTER}", parse_mode="HTML")
+            await safe_edit(q, f"⚡ Searching on <code>{prov}</code>...{FOOTER}")
             await do_search(q.message, uid, sess.get("query", ""), prov=prov, edit=True)
         elif data.startswith("m:"):
             item = sess["results"][int(data.split(":")[1])]
             sess["item"] = item
-            await q.edit_message_text(f"⏳ Loading <b>{esc(item['title'])}</b>...{FOOTER}", parse_mode="HTML")
+            await safe_edit(q, f"⏳ Loading <b>{esc(item['title'])}</b>...{FOOTER}")
             d = await run_bridge("details", item["provider"], item["id"])
-            if d.get("error"): await q.edit_message_text(f"❌ {esc(d['error'])}{FOOTER}", parse_mode="HTML"); return
+            if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
+            if d.get("poster") and not q.message.photo:
+                try:
+                    m = await q.message.reply_photo(photo=d["poster"], caption=f"⏳ Loading <b>{esc(d['title'])}</b>...{FOOTER}", parse_mode="HTML")
+                    await q.message.delete()
+                    q = type("Q", (), {"message": m, "edit_message_caption": m.edit_caption, "edit_message_text": m.edit_text})()
+                except Exception: pass
             dubs = d.get("dubs", [])
             if len(dubs) > 1:
                 sess["dubs"] = dubs
                 kb = [[InlineKeyboardButton(f"🎙 {x.get('label') or x.get('language')}", callback_data=f"dub:{i}")] for i, x in enumerate(dubs)]
-                await q.edit_message_text(f"🎙 <b>{esc(d['title'])}</b>\nSelect audio language:{FOOTER}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+                kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back:res")])
+                await safe_edit(q, f"{info_header(d)}\n\nSelect audio language:{FOOTER}", InlineKeyboardMarkup(kb))
             else:
                 await show_details(q, sess, d)
         elif data.startswith("dub:"):
             dub = sess["dubs"][int(data.split(":")[1])]
             sess["item"]["id"] = dub["id"]
-            lbl = dub.get("label") or dub.get("language")
-            await q.edit_message_text(f"⏳ Loading <b>{esc(lbl)}</b>...{FOOTER}", parse_mode="HTML")
+            await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
             d = await run_bridge("details", sess["item"]["provider"], dub["id"])
-            if d.get("error"): await q.edit_message_text(f"❌ {esc(d['error'])}{FOOTER}", parse_mode="HTML"); return
+            if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
             await show_details(q, sess, d)
         elif data.startswith("s:"):
             season = sess["seasons"][int(data.split(":")[1])]
@@ -199,16 +242,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 row.append(InlineKeyboardButton(f"E{ep['number']:02d}", callback_data=f"e:{i}"))
                 if len(row) == 4: kb.append(row); row = []
             if row: kb.append(row)
-            await q.edit_message_text(f"📺 <b>Season {season['number']}</b>\nPick an episode:{FOOTER}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+            kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back:seasons")])
+            await safe_edit(q, f"📺 <b>Season {season['number']}</b>\nPick an episode:{FOOTER}", InlineKeyboardMarkup(kb))
         elif data.startswith("e:"):
             ep = sess["season"]["episodes"][int(data.split(":")[1])]
             item = sess["item"]
-            await q.edit_message_text(f"⏳ Fetching qualities for <b>S{ep['season']:02d}E{ep['number']:02d}</b>...{FOOTER}", parse_mode="HTML")
+            await safe_edit(q, f"⏳ Fetching <b>S{ep['season']:02d}E{ep['number']:02d}</b>...{FOOTER}")
             res = await run_bridge("streams", item["provider"], item["id"], str(ep["season"]), str(ep["number"]))
             streams = res.get("streams", [])
             sess["streams"] = streams
-            if not streams: await q.edit_message_text(f"❌ No streams found.{FOOTER}", parse_mode="HTML"); return
-            await q.edit_message_text(f"📺 <b>{esc(item['title'])}</b> • S{ep['season']:02d}E{ep['number']:02d}\nSelect quality:{FOOTER}", reply_markup=quality_kb(streams), parse_mode="HTML")
+            sess["captions"] = res.get("captions", [])
+            if not streams: await safe_edit(q, f"❌ No streams found.{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:eps")]])); return
+            await safe_edit(q, f"📺 <b>{esc(item['title'])}</b> • S{ep['season']:02d}E{ep['number']:02d}\nSelect quality:{FOOTER}", quality_kb(streams, "back:eps"))
         elif data.startswith("q:"):
             idx = int(data.split(":")[1])
             st = sess["streams"][idx]
@@ -217,20 +262,42 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sid = uuid.uuid4().hex[:8]
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "title": title, "qual": qual, "safe": safe}
-            kb = InlineKeyboardMarkup([
+            kb = [
                 [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
                 [InlineKeyboardButton("⬇️ Download", url=f"{BASE_URL}/dl/{sid}")],
-                [InlineKeyboardButton("🔗 Copy Stream URL", callback_data=f"url:{idx}")],
-            ])
-            await q.edit_message_text(f"🎬 <b>{esc(title)}</b>\n🎞 Quality: <b>{esc(qual)}</b>\n\nTap below to play or download:{FOOTER}", reply_markup=kb, parse_mode="HTML")
+            ]
+            if sess.get("captions"):
+                kb.append([InlineKeyboardButton(f"💬 Subtitles ({len(sess['captions'])})", callback_data="subs")])
+            kb.append([InlineKeyboardButton("🔗 Copy Stream URL", callback_data=f"url:{idx}"), InlineKeyboardButton("⬅️ Back", callback_data="back:q")])
+            await safe_edit(q, f"🎬 <b>{esc(title)}</b>\n🎞 Quality: <b>{esc(qual)}</b>\n\nTap below to play or download:{FOOTER}", InlineKeyboardMarkup(kb))
+        elif data == "subs":
+            caps = sess.get("captions", [])[:8]
+            lines = "\n".join(f"• <a href=\"{esc(c['url'])}\">{esc(c['name'])}</a>" for c in caps)
+            await q.message.reply_text(f"💬 <b>Available Subtitles:</b>\n{lines}{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
+        elif data == "back:res":
+            await safe_edit(q, f"🍿 <b>{esc(sess.get('query', 'Results'))}</b>\nPick a title:{FOOTER}", results_kb(sess.get("results", []), sess.get("prov")))
+        elif data == "back:seasons":
+            await show_details(q, sess, sess["details"])
+        elif data == "back:eps":
+            season = sess["season"]
+            kb, row = [], []
+            for i, ep in enumerate(season["episodes"]):
+                row.append(InlineKeyboardButton(f"E{ep['number']:02d}", callback_data=f"e:{i}"))
+                if len(row) == 4: kb.append(row); row = []
+            if row: kb.append(row)
+            kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back:seasons")])
+            await safe_edit(q, f"📺 <b>Season {season['number']}</b>\nPick an episode:{FOOTER}", InlineKeyboardMarkup(kb))
+        elif data == "back:q":
+            await safe_edit(q, f"🎬 <b>{esc(sess['item']['title'])}</b>\nSelect stream quality:{FOOTER}", quality_kb(sess.get("streams", [])))
         elif data.startswith("url:"):
             await q.message.reply_text(sess["streams"][int(data.split(":")[1])]["url"])
     except Exception as e:
-        await q.edit_message_text(f"❌ Error: <code>{esc(str(e)[:400])}</code>{FOOTER}", parse_mode="HTML")
+        await safe_edit(q, f"❌ Error: <code>{esc(str(e)[:400])}</code>{FOOTER}")
 
 threading.Thread(target=start_server, daemon=True).start()
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("trending", trending_cmd))
 app.add_handler(CommandHandler("allow", allow))
 app.add_handler(CommandHandler("remove", remove))
 app.add_handler(CommandHandler("users", list_users))
