@@ -1,5 +1,6 @@
-import os, json, subprocess, asyncio, re, html, io, threading, logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import os, json, subprocess, asyncio, re, html, threading, logging, uuid
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -8,21 +9,60 @@ TOKEN = os.environ["TELEGRAM_TOKEN"]
 ADMIN_ID = 7641123461
 DB = "users.json"
 BRIDGE = os.path.abspath("tg_bridge")
+BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://moviebox-tg-bot.onrender.com").rstrip("/")
 FOOTER = "\n\n⚡ <i>Made by @Dara_OG</i>"
 PROVIDERS = [
     ("moviebox", "MovieBox"), ("fourkhdhub", "4KHDHub"), ("dramachi", "Dramachi"),
     ("bdix_circleftp", "CircleFTP"), ("bdix_dhakaflix", "DhakaFlix"), ("addons", "Addons"),
 ]
 SESSIONS = {}
+STREAMS_CACHE = {}
 
-class Health(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
+    def do_GET(self):
+        if self.path == "/" or self.path == "/health":
+            self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
+        parts = self.path.strip("/").split("/")
+        if len(parts) < 2 or parts[1] not in STREAMS_CACHE:
+            self.send_response(404); self.end_headers(); self.wfile.write(b"Link expired. Search again in Telegram."); return
+        action, sid = parts[0], parts[1]
+        info = STREAMS_CACHE[sid]
+        stream_url = f"{BASE_URL}/s/{sid}"
+        if action == "vlc":
+            vlc_link = "vlc://" + stream_url
+            dl_link = f"{BASE_URL}/dl/{sid}"
+            page = f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(info['title'])}</title>
+<style>body{{background:#0f172a;color:#fff;font-family:sans-serif;text-align:center;padding:40px 20px}}
+.btn{{display:block;max-width:320px;margin:16px auto;padding:16px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:18px}}
+.v{{background:#f97316;color:#fff}}.d{{background:#22c55e;color:#fff}}</style></head>
+<body><h2>🎬 {html.escape(info['title'])}</h2><p>Quality: {html.escape(info['qual'])}</p>
+<a class="btn v" href="{vlc_link}">▶️ Open in VLC</a>
+<a class="btn d" href="{dl_link}">⬇️ Download Video</a>
+<script>setTimeout(function(){{window.location="{vlc_link}";}},300);</script></body></html>"""
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+            self.wfile.write(page.encode()); return
+        if action in ("s", "dl"):
+            hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
+            if "Range" in self.headers: hdrs["Range"] = self.headers["Range"]
+            try:
+                with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+                    with client.stream("GET", info["url"], headers=hdrs) as r:
+                        self.send_response(r.status_code)
+                        for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                            if h in r.headers: self.send_header(h, r.headers[h])
+                        if action == "dl":
+                            ext = ".mpd" if ".mpd" in info["url"] else ".mp4"
+                            self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
+                        self.end_headers()
+                        for chunk in r.iter_bytes(65536):
+                            self.wfile.write(chunk)
+            except Exception: pass
 
-def start_health_server():
+def start_server():
     port = int(os.environ.get("PORT", "10000"))
-    HTTPServer(("0.0.0.0", port), Health).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", port), ProxyHandler).serve_forever()
 
 def esc(v): return html.escape(str(v or ""))
 def load_users(): return set(json.load(open(DB))) if os.path.exists(DB) else {ADMIN_ID}
@@ -37,10 +77,7 @@ async def run_bridge(*args):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if allowed(uid):
-        await update.message.reply_text(
-            f"🎬 <b>MovieBox Stream Bot Ready!</b>\nSend any movie/series name (e.g. <code>Avatar</code>) or <code>/movie Avengers</code>.{FOOTER}",
-            parse_mode="HTML"
-        )
+        await update.message.reply_text(f"🎬 <b>MovieBox Stream Bot Ready!</b>\nSend any movie/series name (e.g. <code>Avatar</code>) or <code>/movie Avengers</code>.{FOOTER}", parse_mode="HTML")
     else:
         await update.message.reply_text(f"🔒 <b>Access Denied</b>\nSend your ID to Admin: <code>{uid}</code>{FOOTER}", parse_mode="HTML")
 
@@ -93,8 +130,8 @@ def fmt_stream(s):
     q = s.get("quality") or (f"{s['resolution']}p" if s.get("resolution") else "Stream")
     sz = f" • {s['size_mb']}MB" if s.get("size_mb") else ""
     lang = f" • {s['language']}" if s.get("language") else ""
-    mir = f" [{s['mirror']}]" if s.get("mirror") else ""
-    return f"🎞 {q}{sz}{lang}{mir}"[:60]
+    fmt = " [MPD]" if ".mpd" in s.get("url", "") else " [MP4]"
+    return f"🎞 {q}{sz}{lang}{fmt}"[:60]
 
 def quality_kb(streams):
     return InlineKeyboardMarkup([[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])])
@@ -167,33 +204,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             idx = int(data.split(":")[1])
             st = sess["streams"][idx]
             qual = st.get("quality") or f"{st.get('resolution', '')}p"
+            title = sess["item"]["title"]
+            sid = uuid.uuid4().hex[:8]
+            safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
+            STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "title": title, "qual": qual, "safe": safe}
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶️ Watch in VLC (.m3u)", callback_data=f"vlc:{idx}")],
+                [InlineKeyboardButton("▶️ Watch in VLC", url=f"{BASE_URL}/vlc/{sid}")],
+                [InlineKeyboardButton("⬇️ Download", url=f"{BASE_URL}/dl/{sid}")],
                 [InlineKeyboardButton("🔗 Copy Stream URL", callback_data=f"url:{idx}")],
             ])
-            await q.edit_message_text(f"🎬 <b>{esc(sess['item']['title'])}</b>\n🎞 Quality: <b>{esc(qual)}</b>\n\nTap below to play:{FOOTER}", reply_markup=kb, parse_mode="HTML")
-        elif data.startswith("vlc:"):
-            st = sess["streams"][int(data.split(":")[1])]
-            qual = st.get("quality") or f"{st.get('resolution', '')}p"
-            title = sess["item"]["title"]
-            lines = ["#EXTM3U", f"#EXTINF:-1,{title} ({qual})"]
-            for k, v in (st.get("headers") or []):
-                if k.lower() == "referer": lines.append(f"#EXTVLCOPT:http-referrer={v}")
-                elif k.lower() == "user-agent": lines.append(f"#EXTVLCOPT:http-user-agent={v}")
-            lines.append(st["url"])
-            bio = io.BytesIO("\n".join(lines).encode("utf-8"))
-            safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", title)
-            await q.message.reply_document(
-                document=bio, filename=f"{safe}.m3u",
-                caption=f"▶️ <b>Tap file to open in VLC!</b>\n🎬 {esc(title)} (<code>{esc(qual)}</code>){FOOTER}",
-                parse_mode="HTML"
-            )
+            await q.edit_message_text(f"🎬 <b>{esc(title)}</b>\n🎞 Quality: <b>{esc(qual)}</b>\n\nTap below to play or download:{FOOTER}", reply_markup=kb, parse_mode="HTML")
         elif data.startswith("url:"):
             await q.message.reply_text(sess["streams"][int(data.split(":")[1])]["url"])
     except Exception as e:
         await q.edit_message_text(f"❌ Error: <code>{esc(str(e)[:400])}</code>{FOOTER}", parse_mode="HTML")
 
-threading.Thread(target=start_health_server, daemon=True).start()
+threading.Thread(target=start_server, daemon=True).start()
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("allow", allow))
@@ -203,4 +229,3 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
-    
