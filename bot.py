@@ -10,6 +10,7 @@ ADMIN_ID = 7641123461
 DB = "users.json"
 BRIDGE = os.path.abspath("tg_bridge")
 BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://moviebox-tg-bot.onrender.com").rstrip("/")
+HOST = BASE_URL.replace("https://", "").replace("http://", "")
 FOOTER = "\n\n⚡ <i>Made by @Dara_OG</i>"
 PROVIDERS = [
     ("moviebox", "MovieBox"), ("fourkhdhub", "4KHDHub"), ("dramachi", "Dramachi"),
@@ -30,24 +31,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
         info = STREAMS_CACHE[sid]
         stream_url = f"{BASE_URL}/s/{sid}"
         if action == "vlc":
-            vlc_link = "vlc://" + stream_url
+            intent_link = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
+            vlc_link = f"vlc://{stream_url}"
             dl_link = f"{BASE_URL}/dl/{sid}"
             page = f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(info['title'])}</title>
-<style>body{{background:#0f172a;color:#fff;font-family:sans-serif;text-align:center;padding:40px 20px}}
-.btn{{display:block;max-width:320px;margin:16px auto;padding:16px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:18px}}
-.v{{background:#f97316;color:#fff}}.d{{background:#22c55e;color:#fff}}</style></head>
-<body><h2>🎬 {html.escape(info['title'])}</h2><p>Quality: {html.escape(info['qual'])}</p>
-<a class="btn v" href="{vlc_link}">▶️ Open in VLC</a>
-<a class="btn d" href="{dl_link}">⬇️ Download Video</a>
-<script>setTimeout(function(){{window.location="{vlc_link}";}},300);</script></body></html>"""
+<style>body{{background:#0f172a;color:#fff;font-family:sans-serif;text-align:center;padding:20px}}
+video{{width:100%;max-width:640px;border-radius:12px;background:#000;margin:12px 0}}
+.btn{{display:block;max-width:320px;margin:12px auto;padding:15px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:17px}}
+.v{{background:#f97316;color:#fff}}.v2{{background:#3b82f6;color:#fff}}.d{{background:#22c55e;color:#fff}}</style></head>
+<body><h3>🎬 {html.escape(info['title'])}</h3><p>{html.escape(info['qual'])}</p>
+<video controls autoplay playsinline src="{stream_url}"></video>
+<a class="btn v" href="{intent_link}">▶️ Open in VLC App</a>
+<a class="btn v2" href="{vlc_link}">🔗 VLC Direct Link</a>
+<a class="btn d" href="{dl_link}">⬇️ Download MP4</a>
+<p style="font-size:12px;color:#94a3b8">Tip: If VLC doesn't open inside Telegram, tap ⋮ → Open in Chrome</p>
+</body></html>"""
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(page.encode()); return
         if action in ("s", "dl"):
             hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
             if "Range" in self.headers: hdrs["Range"] = self.headers["Range"]
+            t = httpx.Timeout(15.0, read=None, write=60.0)
             try:
-                with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+                with httpx.Client(follow_redirects=True, timeout=t) as client:
                     with client.stream("GET", info["url"], headers=hdrs) as r:
                         self.send_response(r.status_code)
                         for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
@@ -209,7 +216,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "title": title, "qual": qual, "safe": safe}
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("▶️ Watch in VLC", url=f"{BASE_URL}/vlc/{sid}")],
+                [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
                 [InlineKeyboardButton("⬇️ Download", url=f"{BASE_URL}/dl/{sid}")],
                 [InlineKeyboardButton("🔗 Copy Stream URL", callback_data=f"url:{idx}")],
             ])
