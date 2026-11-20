@@ -21,6 +21,8 @@ STREAMS_CACHE = {}
 
 class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
+    def do_HEAD(self):
+        self.send_response(200); self.end_headers()
     def do_GET(self):
         if self.path == "/" or self.path == "/health":
             self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
