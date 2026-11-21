@@ -4,6 +4,7 @@ import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from media_resolver import AsyncMediaClient, SessionStore
+from provider_adapters import AdapterRegistry
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -20,6 +21,7 @@ PROVIDERS = [
 SESSIONS, STREAMS_CACHE = {}, {}
 MEDIA_SESSIONS = SessionStore()
 MEDIA_CLIENT = AsyncMediaClient(timeout=15.0, max_retries=2, max_redirects=5)
+SERVER2_ADAPTERS = AdapterRegistry()
 
 def jload(p, d): return json.load(open(p)) if os.path.exists(p) else d
 def jsave(p, d): json.dump(d, open(p, "w"))
@@ -47,17 +49,14 @@ async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMedi
             errors.append(f"{mirror_lbl}: Empty URL")
             continue
         try:
-            insp = await mc.inspect(raw_url)
+            ares = await SERVER2_ADAPTERS.resolve(raw_url, mc)
         except Exception as exc:
             errors.append(f"{mirror_lbl}: {exc}")
             continue
-        if insp.error:
-            errors.append(f"{mirror_lbl}: {insp.error}")
+        if not ares.supported or not ares.variants:
+            errors.append(f"{mirror_lbl}: {ares.limitation or 'Unsupported or protected mirror page'}")
             continue
-        if not insp.variants:
-            errors.append(f"{mirror_lbl}: Unsupported or protected mirror page")
-            continue
-        for v in insp.variants:
+        for v in ares.variants:
             if v.url in seen_urls:
                 continue
             seen_urls.add(v.url)
@@ -78,8 +77,7 @@ async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMedi
     MEDIA_SESSIONS.set(uid, "server2_streams", resolved)
     MEDIA_SESSIONS.set(uid, "server2_errors", errors)
     return resolved, errors
-
-class ProxyHandler(BaseHTTPRequestHandler):
+    class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self):
         p = self.path.split("?", 1)[0].strip("/").split("/")
@@ -196,8 +194,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         for chunk in r.iter_bytes(65536): self.wfile.write(chunk)
             except Exception: pass
-
-def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
+        def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
 async def safe_edit(q, text, markup=None, force_text=False):
     if q.message.photo and force_text:
         await q.message.delete()
@@ -295,6 +292,7 @@ def fmt_stream(s):
     u = s.get("url", "").lower()
     fmt = " [MPD]" if ".mpd" in u or s.get("format") == "dash" else (" [HLS]" if ".m3u8" in u or s.get("format") == "hls" else " [MP4]")
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
+
 def quality_kb(streams, back="back:res"):
     kb = [[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])]
     kb.append([InlineKeyboardButton("⭐ Save", callback_data="save"), InlineKeyboardButton("⬅️ Back", callback_data=back)])
@@ -325,8 +323,7 @@ async def show_details(q, sess, d, uid=0):
             reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
             await safe_edit(q, f"{hdr}\n\n❌ <b>No playable streams found.</b>{reason}{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
         await safe_edit(q, f"{hdr}\n\nSelect stream quality:{FOOTER}", quality_kb(streams))
-
-def save_history(uid, item):
+        def save_history(uid, item):
     all_h = jload(HIST_DB, {})
     h = [x for x in all_h.get(str(uid), []) if x.get("id") != item.get("id")]
     h.insert(0, item); all_h[str(uid)] = h[:10]; jsave(HIST_DB, all_h)
@@ -442,4 +439,4 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling()
-    
+        
