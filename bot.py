@@ -280,7 +280,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
             d = await run_bridge("details", sess["item"]["provider"], dub["id"])
             if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
-                        await show_details(q, sess, d)
+            await show_details(q, sess, d)
         elif data.startswith("s:"):
             season = sess["seasons"][int(data.split(":")[1])]; sess["season"] = season; kb, row = [], []
             for i, ep in enumerate(season["episodes"]):
