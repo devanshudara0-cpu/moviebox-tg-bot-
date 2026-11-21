@@ -143,7 +143,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             )
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(page.encode()); return
-                    if act == "sub" and len(parts) >= 3:
+            if act == "sub" and len(parts) >= 3:
             idx = int(parts[2]); caps = info.get("captions", [])
             if idx < len(caps):
                 try:
