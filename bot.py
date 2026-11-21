@@ -1,4 +1,5 @@
 import os, json, subprocess, asyncio, re, html, threading, logging, uuid
+from urllib.parse import urljoin, quote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,12 +18,23 @@ PROVIDERS = [
     ("bdix_circleftp", "Server 4"), ("bdix_dhakaflix", "Server 5"), ("addons", "Server 6"),
 ]
 SESSIONS, STREAMS_CACHE = {}, {}
+DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 def jload(p, d): return json.load(open(p)) if os.path.exists(p) else d
 def jsave(p, d): json.dump(d, open(p, "w"))
 def load_users(): return set(jload(DB, [ADMIN_ID]))
 def allowed(uid): return uid == ADMIN_ID or uid in load_users()
 def esc(v): return html.escape(str(v or ""))
+
+def parse_headers(raw_hdrs):
+    hdrs = {"User-Agent": DEFAULT_UA}
+    if isinstance(raw_hdrs, dict):
+        hdrs.update({str(k): str(v) for k, v in raw_hdrs.items() if v})
+    elif isinstance(raw_hdrs, list):
+        for item in raw_hdrs:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                hdrs[str(item[0])] = str(item[1])
+    return hdrs
 
 def filter_results(items, query):
     qw = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 1]
@@ -32,8 +44,7 @@ def filter_results(items, query):
     pool = exact if exact else clean
     pool.sort(key=lambda x: (0 if x.get("title", "").lower().startswith(query.lower()) else 1, len(x.get("title", ""))))
     return pool[:10]
-
-class ProxyHandler(BaseHTTPRequestHandler):
+    class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self): self.send_response(200); self.end_headers()
     def do_GET(self):
@@ -46,18 +57,32 @@ class ProxyHandler(BaseHTTPRequestHandler):
         act, sid = parts[0], parts[1]
         info = STREAMS_CACHE[sid]
         surl = f"{BASE_URL}/s/{sid}"
-        hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
+        hdrs = parse_headers(info.get("headers"))
+        raw_url = info["url"]
+        lower_url = raw_url.split("?")[0].lower()
+
         if act == "vlc":
             ilink = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
-            is_mpd = ".mpd" in info["url"]
-            djs = '<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>' if is_mpd else ""
-            dinit = f'<script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>' if is_mpd else ""
-            src = "" if is_mpd else f'src="{surl}"'
+            is_mpd = ".mpd" in lower_url
+            is_m3u8 = ".m3u8" in lower_url
+            is_mkv = ".mkv" in lower_url
+
+            player_js = ""
+            if is_mpd:
+                player_js = f'<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>'
+            elif is_m3u8:
+                player_js = (
+                    '<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>'
+                    f'<script>const v=document.getElementById("v");if(Hls.isSupported()){{const h=new Hls();h.loadSource("{surl}");h.attachMedia(v);}}else if(v.canPlayType("application/vnd.apple.mpegurl")){{v.src="{surl}";}}</script>'
+                )
+
+            src = "" if (is_mpd or is_m3u8) else f'src="{surl}"'
+            mkv_note = '<div style="background:#7c2d12;color:#fed7aa;padding:8px;border-radius:10px;font-size:13px;margin:6px 0">⚠️ MKV format browser me play nahi hota. Neeche <b>Open in VLC App</b> ya <b>Download Video</b> use karein.</div>' if is_mkv else ""
             trks = "".join(f'<track kind="subtitles" label="{esc(c["name"])}" src="{BASE_URL}/sub/{sid}/{i}">' for i, c in enumerate(info.get("captions", [])[:5]))
             meta = f'⭐ {esc(info["rating"])} • ' if info.get("rating") else ""
             page = (
                 f'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
-                f'<title>{esc(info["title"])}</title>{djs}'
+                f'<title>{esc(info["title"])}</title>'
                 f'<style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at top,#1e1b4b,#090d16 70%);color:#f8fafc;font-family:system-ui,sans-serif;padding:14px;text-align:center}}'
                 f'.card{{max-width:680px;margin:0 auto;background:rgba(15,23,42,.88);border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:16px}}'
                 f'.badge{{display:inline-block;background:rgba(249,115,22,.18);color:#fb923c;padding:4px 12px;border-radius:99px;font-size:13px;font-weight:600;margin-bottom:6px}}'
@@ -73,32 +98,34 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f'.ft{{margin-top:14px;font-size:13px}}.ft a{{color:#38bdf8;text-decoration:none;font-weight:600}}</style></head>'
                 f'<body><div id="lk"><button id="ulk" onclick="lk.style.display=\'none\'">🔓 Unlock</button></div>'
                 f'<div class="card"><div class="badge">{meta}{esc(info["qual"])}</div>'
-                f'<h2 style="margin:4px 0 8px">🎬 {esc(info["title"])}</h2>'
-                f'<video id="v" controls autoplay playsinline crossorigin="anonymous" {src}>{trks}</video>{dinit}'
+                f'<h2 style="margin:4px 0 8px">🎬 {esc(info["title"])}</h2>{mkv_note}'
+                f'<video id="v" controls autoplay playsinline crossorigin="anonymous" {src}>{trks}</video>{player_js}'
                 f'<div class="row"><button onclick="v.currentTime-=10">⏪ 10s</button><button onclick="v.currentTime+=10">⏩ 10s</button><button onclick="lk.style.display=\'block\'">🔒 Lock</button></div>'
                 f'<div class="row"><button onclick="v.playbackRate=0.75">0.75x</button><button onclick="v.playbackRate=1">1x</button><button onclick="v.playbackRate=1.25">1.25x</button><button onclick="v.playbackRate=1.5">1.5x</button><button onclick="v.playbackRate=2">2x</button></div>'
                 f'<div class="sliders"><label>☀️ Brightness <input type="range" min="0.3" max="1.6" step="0.05" value="1" oninput="v.style.filter=\'brightness(\'+this.value+\')\'" ></label>'
                 f'<label>🔊 Volume <input type="range" min="0" max="1" step="0.05" value="1" oninput="v.volume=this.value"></label></div>'
                 f'<a class="btn v" href="{ilink}">▶️ Open in VLC App</a>'
                 f'<a class="btn v2" href="vlc://{HOST}/s/{sid}">🔗 VLC Direct Link</a>'
-                f'<a class="btn d" href="{BASE_URL}/dl/{sid}">⬇️ Download Video</a>'
+                f'<a class="btn d" href="{BASE_URL}/dl/{sid}" target="_blank">⬇️ Download Video</a>'
                 f'<div class="ft"><a href="https://t.me/Dara_OG">⚡ Made by @Dara_OG</a></div></div></body></html>'
             )
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(page.encode()); return
+
         if act == "sub" and len(parts) >= 3:
             idx = int(parts[2]); caps = info.get("captions", [])
             if idx < len(caps):
                 try:
-                    txt = httpx.get(caps[idx]["url"], follow_redirects=True, timeout=15.0).text
+                    txt = httpx.get(caps[idx]["url"], headers=hdrs, follow_redirects=True, timeout=15.0).text
                     if not txt.lstrip().startswith("WEBVTT"): txt = "WEBVTT\n\n" + re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", txt)
                     self.send_response(200); self.send_header("Content-Type", "text/vtt; charset=utf-8"); self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
                     self.wfile.write(txt.encode()); return
                 except Exception: pass
             self.send_response(404); self.end_headers(); return
-        if act == "s" and ".mpd" in info["url"]:
+
+        if act == "s" and ".mpd" in lower_url:
             try:
-                xml = httpx.get(info["url"], headers=hdrs, follow_redirects=True, timeout=15.0).text
+                xml = httpx.get(raw_url, headers=hdrs, follow_redirects=True, timeout=15.0).text
                 base = f"{BASE_URL}/seg/{sid}/"
                 xml = re.sub(r"<BaseURL>[^<]*</BaseURL>", "", xml)
                 xml = re.sub(r"(<MPD[^>]*>)", rf"\1<BaseURL>{base}</BaseURL>", xml, count=1)
@@ -106,28 +133,67 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(xml.encode()); return
             except Exception:
                 self.send_response(502); self.end_headers(); return
-        if act in ("s", "dl", "seg"):
-            target = info["url"]
+
+        if act in ("s", "hls") and (".m3u8" in lower_url or act == "hls"):
+            target_m3u8 = raw_url
+            if act == "hls" and "u=" in self.path:
+                from urllib.parse import unquote
+                target_m3u8 = unquote(self.path.split("u=", 1)[1])
+            try:
+                r = httpx.get(target_m3u8, headers=hdrs, follow_redirects=True, timeout=15.0)
+                final_base = str(r.url)
+                lines = []
+                for line in r.text.splitlines():
+                    sline = line.strip()
+                    if not sline or sline.startswith("#"):
+                        if 'URI="' in sline:
+                            def repl_uri(m):
+                                abs_u = urljoin(final_base, m.group(1))
+                                route = "hls" if ".m3u8" in abs_u.lower() else "seg_u"
+                                return f'URI="{BASE_URL}/{route}/{sid}?u={quote(abs_u, safe="")}"'
+                            sline = re.sub(r'URI="([^"]+)"', repl_uri, sline)
+                        lines.append(sline)
+                    else:
+                        abs_u = urljoin(final_base, sline)
+                        route = "hls" if ".m3u8" in abs_u.lower() else "seg_u"
+                        lines.append(f"{BASE_URL}/{route}/{sid}?u={quote(abs_u, safe='')}")
+                body = "\n".join(lines).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            except Exception as e:
+                logging.error(f"M3U8 proxy error: {e}")
+                self.send_response(502); self.end_headers(); return
+
+        if act in ("s", "dl", "seg", "seg_u"):
+            target = raw_url
             if act == "seg":
                 sub = "/".join(parts[2:])
                 if "?" in self.path: sub += "?" + self.path.split("?", 1)[1]
-                target = info["url"].rsplit("/", 1)[0] + "/" + sub
+                target = urljoin(raw_url, sub)
+            elif act == "seg_u" and "u=" in self.path:
+                from urllib.parse import unquote
+                target = unquote(self.path.split("u=", 1)[1])
+
             if "Range" in self.headers: hdrs["Range"] = self.headers["Range"]
             try:
-                with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(15.0, read=None, write=60.0)) as client:
+                with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(20.0, read=None, write=60.0)) as client:
                     with client.stream("GET", target, headers=hdrs) as r:
                         self.send_response(r.status_code)
                         for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
                             if h in r.headers: self.send_header(h, r.headers[h])
                         self.send_header("Access-Control-Allow-Origin", "*")
                         if act == "dl":
-                            ext = ".mpd" if ".mpd" in info["url"] else ".mp4"
+                            ext = ".mkv" if ".mkv" in lower_url else (".mpd" if ".mpd" in lower_url else (".m3u8" if ".m3u8" in lower_url else ".mp4"))
                             self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
                         self.end_headers()
                         for chunk in r.iter_bytes(65536): self.wfile.write(chunk)
-            except Exception: pass
-
-def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
+            except Exception as e:
+                logging.error(f"Stream error ({target}): {e}")
+                def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
 async def safe_edit(q, text, markup=None, force_text=False):
     if q.message.photo and force_text:
         await q.message.delete()
@@ -222,7 +288,8 @@ def fmt_stream(s):
     q = s.get("quality") or (f"{s['resolution']}p" if s.get("resolution") else "Stream")
     sz = f" • {s['size_mb']}MB" if s.get("size_mb") else ""
     lang = f" • {s['language']}" if s.get("language") else ""
-    fmt = " [MPD]" if ".mpd" in s.get("url", "") else " [MP4]"
+    u = s.get("url", "").lower()
+    fmt = " [MPD]" if ".mpd" in u else (" [HLS]" if ".m3u8" in u else (" [MKV]" if ".mkv" in u else " [MP4]"))
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
 
 def quality_kb(streams, back="back:res"):
@@ -356,4 +423,4 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
-            
+                
