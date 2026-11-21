@@ -77,7 +77,7 @@ async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMedi
     MEDIA_SESSIONS.set(uid, "server2_streams", resolved)
     MEDIA_SESSIONS.set(uid, "server2_errors", errors)
     return resolved, errors
-    class ProxyHandler(BaseHTTPRequestHandler):
+class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self):
         p = self.path.split("?", 1)[0].strip("/").split("/")
