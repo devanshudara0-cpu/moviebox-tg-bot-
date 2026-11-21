@@ -116,18 +116,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_response(502); self.end_headers(); return
         if act in ("s", "dl", "seg"):
             target = info["url"]
-            if act == "s" and ".mp4" in target and not any(k.lower() == "cookie" for k in hdrs):
-                self.send_response(302); self.send_header("Location", target); self.end_headers(); return
             if act == "seg":
                 sub = "/".join(parts[2:])
                 if "?" in self.path: sub += "?" + self.path.split("?", 1)[1]
                 target = info["url"].rsplit("/", 1)[0] + "/" + sub
-            if ".mp4" in target and not any(k.lower() == "cookie" for k in hdrs):
-                hdrs = {k: v for k, v in hdrs.items() if k.lower() != "referer"}
             if "Range" in self.headers: hdrs["Range"] = self.headers["Range"]
             try:
                 with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(15.0, read=None, write=60.0)) as client:
                     with client.stream("GET", target, headers=hdrs) as r:
+                        if r.status_code in (403, 428, 429) and any(k.lower() == "referer" for k in hdrs):
+                            hdrs2 = {k: v for k, v in hdrs.items() if k.lower() != "referer"}
+                            with client.stream("GET", target, headers=hdrs2) as r2:
+                                self.send_response(r2.status_code)
+                                for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                                    if h in r2.headers: self.send_header(h, r2.headers[h])
+                                self.send_header("Access-Control-Allow-Origin", "*")
+                                if act == "dl":
+                                    ext = ".mpd" if ".mpd" in info["url"] else ".mp4"
+                                    self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
+                                self.end_headers()
+                                for chunk in r2.iter_bytes(65536): self.wfile.write(chunk)
+                                return
                         self.send_response(r.status_code)
                         for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
                             if h in r.headers: self.send_header(h, r.headers[h])
@@ -368,3 +377,4 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
+            
