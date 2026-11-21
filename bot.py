@@ -146,7 +146,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(xml.encode()); return
             except Exception:
                 self.send_response(502); self.end_headers(); return
-        # If act == 'dl', let it fall through to stream chunking with Content-Disposition
+        if act == "dl" and not is_mpd and not is_hls:
+            self.send_response(302); self.send_header("Location", info["url"]); self.end_headers(); return
         if act in ("s", "dl", "seg"):
             target = info["url"]
             if act == "seg":
@@ -429,16 +430,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             d = sess.get("details", {})
             STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "codec": st.get("codec"), "title": title, "qual": qual, "safe": safe, "rating": d.get("rating"), "captions": sess.get("captions", [])}
-            is_cloud = any(k in st["url"].lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile", "1fichier"])
-            if is_cloud:
-                kb = [
-                    [InlineKeyboardButton("⚡ Open Cloud Download Page", url=st["url"])],
-                ]
-            else:
-                kb = [
-                    [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
-                    [InlineKeyboardButton("⬇️ 1-Click Download", url=f"{BASE_URL}/dl/{sid}")],
-                ]
+            kb = [
+                [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
+                [InlineKeyboardButton("⬇️ Download", url=f"{BASE_URL}/dl/{sid}")],
+            ]
+            if any(k in st["url"].lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile"]):
+                kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=st["url"])])
             if sess.get("season") and sess.get("e_idx", -1) + 1 < len(sess["season"]["episodes"]):
                 kb.append([InlineKeyboardButton("⏭ Next Episode", callback_data=f"e:{sess['e_idx']+1}")])
             kb.append([InlineKeyboardButton("🔗 Copy URL", callback_data=f"url:{idx}"), InlineKeyboardButton("⬅️ Back", callback_data="back:q")])
