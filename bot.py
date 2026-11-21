@@ -39,12 +39,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/health"):
             self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
-        parts = self.path.strip("/").split("/")
+        clean_path = self.path.split("?", 1)[0]
+        parts = clean_path.strip("/").split("/")
         if len(parts) < 2 or parts[1] not in STREAMS_CACHE:
             self.send_response(404); self.end_headers(); self.wfile.write(b"Link expired. Search again."); return
         act, sid = parts[0], parts[1]
         info = STREAMS_CACHE[sid]
         surl = f"{BASE_URL}/s/{sid}"
+        hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
         if act == "vlc":
             ilink = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
             is_mpd = ".mpd" in info["url"]
@@ -78,7 +80,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f'<div class="sliders"><label>☀️ Brightness <input type="range" min="0.3" max="1.6" step="0.05" value="1" oninput="v.style.filter=\'brightness(\'+this.value+\')\'" ></label>'
                 f'<label>🔊 Volume <input type="range" min="0" max="1" step="0.05" value="1" oninput="v.volume=this.value"></label></div>'
                 f'<a class="btn v" href="{ilink}">▶️ Open in VLC App</a>'
-                f'<a class="btn v2" href="vlc://{surl}">🔗 VLC Direct Link</a>'
+                f'<a class="btn v2" href="vlc://{HOST}/s/{sid}">🔗 VLC Direct Link</a>'
                 f'<a class="btn d" href="{BASE_URL}/dl/{sid}">⬇️ Download Video</a>'
                 f'<div class="ft"><a href="https://t.me/Dara_OG">⚡ Made by @Dara_OG</a></div></div></body></html>'
             )
@@ -94,15 +96,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(txt.encode()); return
                 except Exception: pass
             self.send_response(404); self.end_headers(); return
-        if act in ("s", "dl"):
-            hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
+        if act == "s" and ".mpd" in info["url"]:
+            try:
+                xml = httpx.get(info["url"], headers=hdrs, follow_redirects=True, timeout=15.0).text
+                base = f"{BASE_URL}/seg/{sid}/"
+                xml = re.sub(r"<BaseURL>[^<]*</BaseURL>", "", xml)
+                xml = re.sub(r"(<MPD[^>]*>)", rf"\1<BaseURL>{base}</BaseURL>", xml, count=1)
+                self.send_response(200); self.send_header("Content-Type", "application/dash+xml"); self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
+                self.wfile.write(xml.encode()); return
+            except Exception:
+                self.send_response(502); self.end_headers(); return
+        if act in ("s", "dl", "seg"):
+            target = info["url"]
+            if act == "seg":
+                sub = "/".join(parts[2:])
+                if "?" in self.path: sub += "?" + self.path.split("?", 1)[1]
+                target = info["url"].rsplit("/", 1)[0] + "/" + sub
             if "Range" in self.headers: hdrs["Range"] = self.headers["Range"]
             try:
                 with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(15.0, read=None, write=60.0)) as client:
-                    with client.stream("GET", info["url"], headers=hdrs) as r:
+                    with client.stream("GET", target, headers=hdrs) as r:
                         self.send_response(r.status_code)
                         for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
                             if h in r.headers: self.send_header(h, r.headers[h])
+                        self.send_header("Access-Control-Allow-Origin", "*")
                         if act == "dl":
                             ext = ".mpd" if ".mpd" in info["url"] else ".mp4"
                             self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
@@ -111,8 +128,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except Exception: pass
 
 def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
-
-async def safe_edit(q, text, markup=None, force_text=False):
+ async def safe_edit(q, text, markup=None, force_text=False):
     if q.message.photo and force_text:
         await q.message.delete()
         await q.message.reply_text(text[:4090], reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
@@ -340,3 +356,4 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
+            
