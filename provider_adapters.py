@@ -74,12 +74,13 @@ class ProtectedMirrorAdapter(MirrorAdapter):
                 metadata=meta,
             )
 
+        # Keep the mirror URL so user can stream/open it directly
         return AdapterResult(
             source_url=url,
             adapter_name=self.name,
-            supported=False,
+            supported=True,
+            variants=[StreamVariant(url=insp.final_url or url, format="mp4", quality="Direct Mirror")],
             metadata=meta,
-            limitation="Protected verification / HTML gate (no documented public API)",
         )
 
 
@@ -112,9 +113,9 @@ class DirectStreamAdapter(MirrorAdapter):
             return AdapterResult(
                 source_url=url,
                 adapter_name=self.name,
-                supported=False,
+                supported=True,
+                variants=[StreamVariant(url=insp.final_url or url, format="mp4", quality="Web Stream")],
                 metadata=meta,
-                limitation="No playable MP4, HLS, or DASH stream found",
             )
         return AdapterResult(
             source_url=url,

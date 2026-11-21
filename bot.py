@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from media_resolver import AsyncMediaClient, SessionStore
 from provider_adapters import AdapterRegistry
+import sites_scraper
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -15,8 +16,11 @@ BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://moviebox-tg-bot.onrend
 HOST = BASE_URL.replace("https://", "").replace("http://", "")
 FOOTER = '\n\n⚡ <i>Made by <a href="https://t.me/Dara_OG">@Dara_OG</a></i>'
 PROVIDERS = [
-    ("moviebox", "Server 1"), ("fourkhdhub", "Server 2"), ("dramachi", "Server 3"),
-    ("bdix_circleftp", "Server 4"), ("bdix_dhakaflix", "Server 5"), ("addons", "Server 6"),
+    ("moviebox", "Server 1"),
+    ("fourkhdhub", "Server 2"),
+    ("vegamovies", "Server 3"),
+    ("katmovieshd", "Server 4"),
+    ("rogmovies", "Server 5"),
 ]
 SESSIONS, STREAMS_CACHE = {}, {}
 MEDIA_SESSIONS = SessionStore()
@@ -173,8 +177,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(xml.encode()); return
             except Exception:
                 self.send_response(502); self.end_headers(); return
-        if act == "dl" and not is_mpd and not is_hls:
-            self.send_response(302); self.send_header("Location", info["url"]); self.end_headers(); return
+        # If act == 'dl', let it fall through to stream chunking with Content-Disposition
         if act in ("s", "dl", "seg"):
             target = info["url"]
             if act == "seg":
@@ -244,6 +247,27 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     await update.message.reply_text("👥 Allowed IDs: " + ", ".join(map(str, sorted(load_users()))))
 
+async def setdomain_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID or len(context.args) < 2:
+        await update.message.reply_text("💡 Usage: <code>/setdomain vegamovies https://new-domain.com</code>\nAvailable: <code>vegamovies</code>, <code>rogmovies</code>, <code>katmovieshd</code>, <code>hdhub4u</code>", parse_mode="HTML")
+        return
+    site = context.args[0].lower().strip()
+    url = context.args[1].strip()
+    ok = sites_scraper.save_domain(site, url)
+    if ok:
+        await update.message.reply_text(f"✅ Domain for <b>{site}</b> updated to:\n<code>{url}</code>", parse_mode="HTML")
+    else:
+        await update.message.reply_text("❌ Failed to update domain.", parse_mode="HTML")
+
+async def domains_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not allowed(update.effective_user.id): return
+    doms = sites_scraper.load_domains()
+    txt = "🌐 <b>Current Server Domains:</b>\n\n"
+    for k, v in doms.items():
+        txt += f"• <b>{k}</b>: <code>{v}</code>\n"
+    txt += f"\n<i>Admin command to update:</i>\n<code>/setdomain &lt;server&gt; &lt;url&gt;</code>{FOOTER}"
+    await update.message.reply_text(txt, parse_mode="HTML", disable_web_page_preview=True)
+
 def results_kb(results, prov=None):
     kb = []
     if prov:
@@ -257,7 +281,11 @@ def results_kb(results, prov=None):
 
 async def do_search(msg_obj, uid, query, prov="moviebox", edit=False):
     SESSIONS[uid] = {"query": query, "prov": prov}
-    data = await run_bridge("search", prov, query)
+    if prov in ("vegamovies", "katmovieshd", "rogmovies"):
+        custom_results = await asyncio.to_thread(sites_scraper.search_custom_provider, prov, query)
+        data = {"results": custom_results}
+    else:
+        data = await run_bridge("search", prov, query)
     results = filter_results(data.get("results", []), query)
     SESSIONS[uid]["results"] = results
     lbl = dict(PROVIDERS).get(prov, prov)
@@ -363,7 +391,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("m:"):
             item = sess["results"][int(data.split(":")[1])]; sess["item"] = item
             await safe_edit(q, f"⏳ Loading <b>{esc(item['title'])}</b>...{FOOTER}")
-            d = await run_bridge("details", item["provider"], item["id"])
+            if item.get("provider") in ("vegamovies", "katmovieshd", "rogmovies"):
+                d = await asyncio.to_thread(sites_scraper.get_custom_details, item["provider"], item["id"])
+            else:
+                d = await run_bridge("details", item["provider"], item["id"])
             if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
             if d.get("poster") and not q.message.photo:
                 try:
@@ -416,7 +447,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             d = sess.get("details", {})
             STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "codec": st.get("codec"), "title": title, "qual": qual, "safe": safe, "rating": d.get("rating"), "captions": sess.get("captions", [])}
-            kb = [[InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")], [InlineKeyboardButton("⬇️ Download", url=f"{BASE_URL}/dl/{sid}")]]
+            kb = [
+                [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
+                [InlineKeyboardButton("⬇️ 1-Click Download", url=f"{BASE_URL}/dl/{sid}")],
+            ]
+            if str(st.get("url", "")).startswith("http") and not str(st.get("url", "")).startswith(BASE_URL):
+                kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=st["url"])])
             if sess.get("season") and sess.get("e_idx", -1) + 1 < len(sess["season"]["episodes"]):
                 kb.append([InlineKeyboardButton("⏭ Next Episode", callback_data=f"e:{sess['e_idx']+1}")])
             kb.append([InlineKeyboardButton("🔗 Copy URL", callback_data=f"url:{idx}"), InlineKeyboardButton("⬅️ Back", callback_data="back:q")])
@@ -450,6 +486,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("allow", allow))
     app.add_handler(CommandHandler("remove", remove))
     app.add_handler(CommandHandler("users", list_users))
+    app.add_handler(CommandHandler("setdomain", setdomain_cmd))
+    app.add_handler(CommandHandler("domains", domains_cmd))
     app.add_handler(CommandHandler("movie", movie_search))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
