@@ -1,4 +1,4 @@
-import os, json, subprocess, asyncio, re, html, threading, logging, uuid
+import os, json, subprocess, asyncio, re, html, threading, logging, uuid, shutil
 from urllib.parse import urljoin, quote, unquote
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import httpx
@@ -41,6 +41,14 @@ def filter_results(items, query):
     pool.sort(key=lambda x: (0 if x.get("title", "").lower().startswith(query.lower()) else 1, len(x.get("title", ""))))
     return pool[:10]
 
+def probe_stream(url, hdrs):
+    try:
+        with httpx.Client(follow_redirects=True, timeout=10.0) as c:
+            with c.stream("GET", url, headers={**hdrs, "Range": "bytes=0-1023"}) as r:
+                return r.status_code, r.headers.get("content-type", "unknown").split(";")[0].strip()
+    except Exception as e:
+        return 0, str(e)[:60]
+
 def handle_get(h):
     if h.path in ("/", "/health"): h.send_response(200); h.end_headers(); h.wfile.write(b"OK"); return
     parts = h.path.split("?", 1)[0].strip("/").split("/")
@@ -52,12 +60,18 @@ def handle_get(h):
     if act == "vlc":
         ilink = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
         is_mpd, is_m3u8, is_mkv = ".mpd" in lurl, ".m3u8" in lurl, ".mkv" in lurl
+        is_h265 = "h265" in lurl or "hevc" in lurl
+        st_code, ctype = probe_stream(raw_url, hdrs)
+        warn = ""
+        if st_code >= 400 or st_code == 0 or "text/html" in ctype:
+            warn = f'<div style="background:#7f1d1d;color:#fecaca;padding:9px;border-radius:10px;font-size:13px;margin:6px 0">❌ Stream Blocked/Invalid (HTTP {st_code} • {esc(ctype)}). Ye server direct link ke bajaye webpage/error de raha hai.</div>'
+        elif is_h265 or is_mkv:
+            warn = '<div style="background:#7c2d12;color:#fed7aa;padding:9px;border-radius:10px;font-size:13px;margin:6px 0">⚠️ Ye <b>H.265 / MKV</b> video hai — mobile browser me sirf audio aayega. Video dekhne ke liye <b>Open in VLC App</b> dabayein ya quality list se <b>H.264</b> chunein.</div>'
         pjs = f'<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script><script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>' if is_mpd else (f'<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script><script>const v=document.getElementById("v");if(Hls.isSupported()){{const h=new Hls();h.loadSource("{surl}");h.attachMedia(v);}}else{{v.src="{surl}";}}</script>' if is_m3u8 else "")
         src = "" if (is_mpd or is_m3u8) else f'src="{surl}"'
-        note = '<div style="background:#7c2d12;color:#fed7aa;padding:8px;border-radius:10px;font-size:13px;margin:6px 0">⚠️ MKV browser me play nahi hota. VLC App ya Download use karein.</div>' if is_mkv else ""
         trks = "".join(f'<track kind="subtitles" label="{esc(c["name"])}" src="{BASE_URL}/sub/{sid}/{i}">' for i, c in enumerate(info.get("captions", [])[:5]))
         meta = f'⭐ {esc(info["rating"])} • ' if info.get("rating") else ""
-        page = f'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(info["title"])}</title><style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at top,#1e1b4b,#090d16 70%);color:#f8fafc;font-family:system-ui,sans-serif;padding:14px;text-align:center}}.card{{max-width:680px;margin:0 auto;background:rgba(15,23,42,.88);border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:16px}}.badge{{display:inline-block;background:rgba(249,115,22,.18);color:#fb923c;padding:4px 12px;border-radius:99px;font-size:13px;font-weight:600;margin-bottom:6px}}video{{width:100%;border-radius:12px;background:#000;margin:8px 0}}.row{{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:8px 0}}.row button{{background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:7px 11px;border-radius:8px;font-weight:600}}.sliders{{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:10px;margin:10px 0;text-align:left;font-size:13px}}.sliders label{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0}}.sliders input{{flex:1;accent-color:#f97316}}.btn{{display:block;width:100%;max-width:340px;margin:9px auto;padding:13px;border-radius:12px;text-decoration:none;font-weight:700;font-size:15px}}.v{{background:#f97316;color:#fff}}.v2{{background:#2563eb;color:#fff}}.d{{background:#16a34a;color:#fff}}#lk{{display:none;position:fixed;inset:0;z-index:9999}}#ulk{{position:fixed;top:16px;right:16px;background:rgba(15,23,42,.9);color:#fff;border:1px solid #475569;padding:10px 14px;border-radius:99px;font-weight:700}}.ft{{margin-top:14px;font-size:13px}}.ft a{{color:#38bdf8;text-decoration:none;font-weight:600}}</style></head><body><div id="lk"><button id="ulk" onclick="lk.style.display=\'none\'">🔓 Unlock</button></div><div class="card"><div class="badge">{meta}{esc(info["qual"])}</div><h2 style="margin:4px 0 8px">🎬 {esc(info["title"])}</h2>{note}<video id="v" controls autoplay playsinline crossorigin="anonymous" {src}>{trks}</video>{pjs}<div class="row"><button onclick="v.currentTime-=10">⏪ 10s</button><button onclick="v.currentTime+=10">⏩ 10s</button><button onclick="lk.style.display=\'block\'">🔒 Lock</button></div><div class="row"><button onclick="v.playbackRate=0.75">0.75x</button><button onclick="v.playbackRate=1">1x</button><button onclick="v.playbackRate=1.25">1.25x</button><button onclick="v.playbackRate=1.5">1.5x</button><button onclick="v.playbackRate=2">2x</button></div><div class="sliders"><label>☀️ Brightness <input type="range" min="0.3" max="1.6" step="0.05" value="1" oninput="v.style.filter=\'brightness(\'+this.value+\')\'" ></label><label>🔊 Volume <input type="range" min="0" max="1" step="0.05" value="1" oninput="v.volume=this.value"></label></div><a class="btn v" href="{ilink}">▶️ Open in VLC App</a><a class="btn v2" href="vlc://{HOST}/s/{sid}">🔗 VLC Direct Link</a><a class="btn d" href="{BASE_URL}/dl/{sid}" target="_blank">⬇️ Download Video</a><div class="ft"><a href="https://t.me/Dara_OG">⚡ Made by @Dara_OG</a></div></div></body></html>'
+        page = f'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(info["title"])}</title><style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at top,#1e1b4b,#090d16 70%);color:#f8fafc;font-family:system-ui,sans-serif;padding:14px;text-align:center}}.card{{max-width:680px;margin:0 auto;background:rgba(15,23,42,.88);border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:16px}}.badge{{display:inline-block;background:rgba(249,115,22,.18);color:#fb923c;padding:4px 12px;border-radius:99px;font-size:13px;font-weight:600;margin-bottom:6px}}video{{width:100%;border-radius:12px;background:#000;margin:8px 0}}.row{{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:8px 0}}.row button{{background:#1e293b;color:#e2e8f0;border:1px solid #334155;padding:7px 11px;border-radius:8px;font-weight:600}}.sliders{{background:#0f172a;border:1px solid #1e293b;border-radius:12px;padding:10px;margin:10px 0;text-align:left;font-size:13px}}.sliders label{{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0}}.sliders input{{flex:1;accent-color:#f97316}}.btn{{display:block;width:100%;max-width:340px;margin:9px auto;padding:13px;border-radius:12px;text-decoration:none;font-weight:700;font-size:15px}}.v{{background:#f97316;color:#fff}}.v2{{background:#2563eb;color:#fff}}.d{{background:#16a34a;color:#fff}}#lk{{display:none;position:fixed;inset:0;z-index:9999}}#ulk{{position:fixed;top:16px;right:16px;background:rgba(15,23,42,.9);color:#fff;border:1px solid #475569;padding:10px 14px;border-radius:99px;font-weight:700}}.ft{{margin-top:14px;font-size:13px}}.ft a{{color:#38bdf8;text-decoration:none;font-weight:600}}</style></head><body><div id="lk"><button id="ulk" onclick="lk.style.display=\'none\'">🔓 Unlock</button></div><div class="card"><div class="badge">{meta}{esc(info["qual"])}</div><h2 style="margin:4px 0 8px">🎬 {esc(info["title"])}</h2>{warn}<video id="v" controls autoplay playsinline crossorigin="anonymous" {src}>{trks}</video>{pjs}<div class="row"><button onclick="v.currentTime-=10">⏪ 10s</button><button onclick="v.currentTime+=10">⏩ 10s</button><button onclick="lk.style.display=\'block\'">🔒 Lock</button></div><div class="row"><button onclick="v.playbackRate=0.75">0.75x</button><button onclick="v.playbackRate=1">1x</button><button onclick="v.playbackRate=1.25">1.25x</button><button onclick="v.playbackRate=1.5">1.5x</button><button onclick="v.playbackRate=2">2x</button></div><div class="sliders"><label>☀️ Brightness <input type="range" min="0.3" max="1.6" step="0.05" value="1" oninput="v.style.filter=\'brightness(\'+this.value+\')\'" ></label><label>🔊 Volume <input type="range" min="0" max="1" step="0.05" value="1" oninput="v.volume=this.value"></label></div><a class="btn v" href="{ilink}">▶️ Open in VLC App</a><a class="btn v2" href="vlc://{HOST}/s/{sid}">🔗 VLC Direct Link</a><a class="btn d" href="{BASE_URL}/dl/{sid}" target="_blank">⬇️ Download Video</a><div class="ft"><a href="https://t.me/Dara_OG">⚡ Made by @Dara_OG</a></div></div></body></html>'
         h.send_response(200); h.send_header("Content-Type", "text/html; charset=utf-8"); h.end_headers(); h.wfile.write(page.encode()); return
     if act == "sub" and len(parts) >= 3:
         idx = int(parts[2]); caps = info.get("captions", [])
@@ -90,6 +104,18 @@ def handle_get(h):
                     lines.append(f"{BASE_URL}/{'hls' if '.m3u8' in au.lower() else 'seg_u'}/{sid}?u={quote(au, safe='')}")
             h.send_response(200); h.send_header("Content-Type", "application/vnd.apple.mpegurl"); h.send_header("Access-Control-Allow-Origin", "*"); h.end_headers(); h.wfile.write("\n".join(lines).encode()); return
         except Exception: h.send_response(502); h.end_headers(); return
+    if act == "dl" and (".mpd" in lurl or ".m3u8" in lurl) and shutil.which("ffmpeg"):
+        h.send_response(200); h.send_header("Content-Type", "video/mp4"); h.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}.mp4"'); h.end_headers()
+        hdr_str = "".join(f"{k}: {v}\r\n" for k, v in hdrs.items())
+        proc = subprocess.Popen(["ffmpeg", "-headers", hdr_str, "-i", raw_url, "-c", "copy", "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk: break
+                h.wfile.write(chunk)
+        except Exception: pass
+        finally: proc.kill()
+        return
     if act in ("s", "dl", "seg", "seg_u"):
         target = urljoin(raw_url, "/".join(parts[2:]) + ("?" + h.path.split("?", 1)[1] if "?" in h.path else "")) if act == "seg" else (unquote(h.path.split("u=", 1)[1]) if (act == "seg_u" and "u=" in h.path) else raw_url)
         if "Range" in h.headers: hdrs["Range"] = h.headers["Range"]
@@ -199,13 +225,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not allowed(update.effective_user.id): return
     await do_search(update.message, update.effective_user.id, update.message.text.strip())
 
+def sort_streams(streams):
+    def score(s):
+        u = s.get("url", "").lower()
+        is_h265 = 1 if ("h265" in u or "hevc" in u or ".mkv" in u) else 0
+        is_mp4 = 0 if ".mp4" in u else (1 if ".m3u8" in u else 2)
+        return (is_h265, is_mp4)
+    return sorted(streams, key=score)
+
 def fmt_stream(s):
     q = s.get("quality") or (f"{s['resolution']}p" if s.get("resolution") else "Stream")
     sz = f" • {s['size_mb']}MB" if s.get("size_mb") else ""
     lang = f" • {s['language']}" if s.get("language") else ""
     u = s.get("url", "").lower()
+    codec = " • H265" if ("h265" in u or "hevc" in u) else ""
     fmt = " [MPD]" if ".mpd" in u else (" [HLS]" if ".m3u8" in u else (" [MKV]" if ".mkv" in u else " [MP4]"))
-    return f"🎞 {q}{sz}{lang}{fmt}"[:60]
+    return f"🎞 {q}{sz}{lang}{codec}{fmt}"[:60]
 
 def quality_kb(streams, back="back:res"):
     kb = [[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])]
@@ -227,11 +262,11 @@ async def show_details(q, sess, d):
         kb.append([InlineKeyboardButton("⭐ Save", callback_data="save"), InlineKeyboardButton("⬅️ Back", callback_data="back:res")])
         await safe_edit(q, f"{hdr}\n\nChoose a season:{FOOTER}", InlineKeyboardMarkup(kb))
     else:
-        streams = d.get("streams", [])
+        streams = sort_streams(d.get("streams", []))
         sess["streams"], sess["captions"] = streams, d.get("captions", [])
         if not streams:
             await safe_edit(q, f"{hdr}\n\n❌ <b>No streams found.</b>{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
-        await safe_edit(q, f"{hdr}\n\nSelect stream quality:{FOOTER}", quality_kb(streams))
+        await safe_edit(q, f"{hdr}\n\nSelect stream quality (H264 plays in browser, H265 in VLC):{FOOTER}", quality_kb(streams))
 
 def save_history(uid, item):
     all_h = jload(HIST_DB, {})
@@ -292,7 +327,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ep = sess["season"]["episodes"][e_idx]; item = sess["item"]
             await safe_edit(q, f"⏳ Fetching <b>S{ep['season']:02d}E{ep['number']:02d}</b>...{FOOTER}")
             res = await run_bridge("streams", item["provider"], item["id"], str(ep["season"]), str(ep["number"]))
-            streams = res.get("streams", [])
+            streams = sort_streams(res.get("streams", []))
             sess["streams"], sess["captions"] = streams, res.get("captions", [])
             if not streams: await safe_edit(q, f"❌ No streams found.{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:eps")]])); return
             await safe_edit(q, f"📺 <b>{esc(item['title'])}</b> • S{ep['season']:02d}E{ep['number']:02d}\nSelect quality:{FOOTER}", quality_kb(streams, "back:eps"))
@@ -338,4 +373,4 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
-            
+        
