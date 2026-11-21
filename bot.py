@@ -22,6 +22,7 @@ SESSIONS, STREAMS_CACHE = {}, {}
 MEDIA_SESSIONS = SessionStore()
 MEDIA_CLIENT = AsyncMediaClient(timeout=15.0, max_retries=2, max_redirects=5)
 SERVER2_ADAPTERS = AdapterRegistry()
+HTTP_POOL = httpx.Client(follow_redirects=True, timeout=httpx.Timeout(15.0, read=None, write=60.0), limits=httpx.Limits(max_connections=30, max_keepalive_connections=15))
 
 def jload(p, d): return json.load(open(p)) if os.path.exists(p) else d
 def jsave(p, d): json.dump(d, open(p, "w"))
@@ -77,13 +78,14 @@ async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMedi
     MEDIA_SESSIONS.set(uid, "server2_streams", resolved)
     MEDIA_SESSIONS.set(uid, "server2_errors", errors)
     return resolved, errors
-class ProxyHandler(BaseHTTPRequestHandler):
+    class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self):
         p = self.path.split("?", 1)[0].strip("/").split("/")
         self.send_response(200)
-        if len(p) >= 2 and p[0] == "s" and p[1] in STREAMS_CACHE:
-            u = STREAMS_CACHE[p[1]]["url"].lower()
+        sid_h = p[1].split(".")[0] if len(p) >= 2 else ""
+        if len(p) >= 2 and p[0] == "s" and sid_h in STREAMS_CACHE:
+            u = STREAMS_CACHE[sid_h]["url"].lower()
             ctype = "application/dash+xml" if ".mpd" in u else ("application/vnd.apple.mpegurl" if ".m3u8" in u else "video/mp4")
             self.send_header("Content-Type", ctype)
             self.send_header("Accept-Ranges", "bytes")
@@ -93,23 +95,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
         clean_path = self.path.split("?", 1)[0]
         parts = clean_path.strip("/").split("/")
-        if len(parts) < 2 or parts[1] not in STREAMS_CACHE:
+        sid = parts[1].split(".")[0] if len(parts) >= 2 else ""
+        if len(parts) < 2 or sid not in STREAMS_CACHE:
             self.send_response(404); self.end_headers(); self.wfile.write(b"Link expired. Search again."); return
-        act, sid = parts[0], parts[1]
+        act = parts[0]
         info = STREAMS_CACHE[sid]
-        surl = f"{BASE_URL}/s/{sid}"
+        u_low = info["url"].lower()
+        is_mpd = ".mpd" in u_low
+        is_hls = ".m3u8" in u_low
+        ext = ".mpd" if is_mpd else (".m3u8" if is_hls else "")
+        surl = f"{BASE_URL}/s/{sid}{ext}"
         hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
         if act == "vlc":
-            ilink = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
-            u_low = info["url"].lower()
-            is_mpd = ".mpd" in u_low
-            is_hls = ".m3u8" in u_low
+            if not is_mpd and not is_hls and info["url"].startswith("https://"):
+                vlc_target = info["url"].replace("https://", "", 1)
+                ilink = f"intent://{vlc_target}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
+                vlink = f"vlc://{vlc_target}"
+            else:
+                itype = "application/dash+xml" if is_mpd else "video/*"
+                ilink = f"intent://{HOST}/s/{sid}{ext}#Intent;scheme=https;package=org.videolan.vlc;type={itype};end"
+                vlink = f"vlc://{HOST}/s/{sid}{ext}"
             djs = '<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>' if is_mpd else ('<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>' if is_hls else "")
             dinit = f'<script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>' if is_mpd else (f'<script>var v=document.getElementById("v");if(Hls.isSupported()){{var h=new Hls();h.loadSource("{surl}");h.attachMedia(v);}}else{{v.src="{surl}";}}</script>' if is_hls else "")
             src = "" if (is_mpd or is_hls) else f'src="{surl}"'
             trks = "".join(f'<track kind="subtitles" label="{esc(c["name"])}" src="{BASE_URL}/sub/{sid}/{i}">' for i, c in enumerate(info.get("captions", [])[:5]))
             meta = f'⭐ {esc(info["rating"])} • ' if info.get("rating") else ""
             h265_note = '<p style="font-size:12px;color:#fbbf24">⚠️ H.265: If screen is black, tap ⋮ → Open in Chrome → Open in VLC App</p>' if "h265" in u_low or "hevc" in str(info.get("codec", "")).lower() else ""
+            dl_btn = '<p style="font-size:12px;color:#94a3b8;margin:8px 0">ℹ️ MPD stream: tap Open in VLC App to play (use MP4 to download)</p>' if is_mpd else f'<a class="btn d" href="{BASE_URL}/dl/{sid}">⬇️ Download Video</a>'
             page = (
                 f'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
                 f'<title>{esc(info["title"])}</title>{djs}'
@@ -135,8 +147,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f'<div class="sliders"><label>☀️ Brightness <input type="range" min="0.3" max="1.6" step="0.05" value="1" oninput="v.style.filter=\'brightness(\'+this.value+\')\'" ></label>'
                 f'<label>🔊 Volume <input type="range" min="0" max="1" step="0.05" value="1" oninput="v.volume=this.value"></label></div>'
                 f'<a class="btn v" href="{ilink}">▶️ Open in VLC App</a>'
-                f'<a class="btn v2" href="vlc://{HOST}/s/{sid}">🔗 VLC Direct Link</a>'
-                f'<a class="btn d" href="{BASE_URL}/dl/{sid}">⬇️ Download Video</a>'
+                f'<a class="btn v2" href="{vlink}">🔗 VLC Direct Link</a>'
+                f'{dl_btn}'
                 f'<div class="ft"><a href="https://t.me/Dara_OG">⚡ Made by @Dara_OG</a></div></div></body></html>'
             )
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
@@ -161,6 +173,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.wfile.write(xml.encode()); return
             except Exception:
                 self.send_response(502); self.end_headers(); return
+        if act == "dl" and not is_mpd and not is_hls:
+            self.send_response(302); self.send_header("Location", info["url"]); self.end_headers(); return
         if act in ("s", "dl", "seg"):
             target = info["url"]
             if act == "seg":
@@ -169,7 +183,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 target = info["url"].rsplit("/", 1)[0] + "/" + sub
             if "Range" in self.headers: hdrs["Range"] = self.headers["Range"]
             try:
-                with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(15.0, read=None, write=60.0)) as client:
+                client = HTTP_POOL
+                if True:
                     with client.stream("GET", target, headers=hdrs) as r:
                         if r.status_code in (403, 428, 429) and any(k.lower() == "referer" for k in hdrs):
                             hdrs2 = {k: v for k, v in hdrs.items() if k.lower() != "referer"}
@@ -182,7 +197,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     ext = ".mpd" if ".mpd" in info["url"].lower() else (".m3u8" if ".m3u8" in info["url"].lower() else ".mp4")
                                     self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
                                 self.end_headers()
-                                for chunk in r2.iter_bytes(65536): self.wfile.write(chunk)
+                                for chunk in r2.iter_bytes(262144): self.wfile.write(chunk)
                                 return
                         self.send_response(r.status_code)
                         for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
@@ -192,9 +207,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             ext = ".mpd" if ".mpd" in info["url"].lower() else (".m3u8" if ".m3u8" in info["url"].lower() else ".mp4")
                             self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
                         self.end_headers()
-                        for chunk in r.iter_bytes(65536): self.wfile.write(chunk)
+                        for chunk in r.iter_bytes(262144): self.wfile.write(chunk)
             except Exception: pass
-def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
+    def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
 async def safe_edit(q, text, markup=None, force_text=False):
     if q.message.photo and force_text:
         await q.message.delete()
@@ -323,7 +338,7 @@ async def show_details(q, sess, d, uid=0):
             reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
             await safe_edit(q, f"{hdr}\n\n❌ <b>No playable streams found.</b>{reason}{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
         await safe_edit(q, f"{hdr}\n\nSelect stream quality:{FOOTER}", quality_kb(streams))
-def save_history(uid, item):
+    def save_history(uid, item):
     all_h = jload(HIST_DB, {})
     h = [x for x in all_h.get(str(uid), []) if x.get("id") != item.get("id")]
     h.insert(0, item); all_h[str(uid)] = h[:10]; jsave(HIST_DB, all_h)
