@@ -111,14 +111,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         surl = f"{BASE_URL}/s/{sid}{ext}"
         hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
         if act == "vlc":
-            if not is_mpd and not is_hls and info["url"].startswith("https://"):
-                vlc_target = info["url"].replace("https://", "", 1)
-                ilink = f"intent://{vlc_target}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
-                vlink = f"vlc://{vlc_target}"
-            else:
-                itype = "application/dash+xml" if is_mpd else "video/*"
-                ilink = f"intent://{HOST}/s/{sid}{ext}#Intent;scheme=https;package=org.videolan.vlc;type={itype};end"
-                vlink = f"vlc://{HOST}/s/{sid}{ext}"
+            itype = "application/dash+xml" if is_mpd else "video/*"
+            ilink = f"intent://{HOST}/s/{sid}{ext}#Intent;scheme=https;package=org.videolan.vlc;type={itype};end"
+            vlink = f"vlc://{HOST}/s/{sid}{ext}"
             djs = '<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>' if is_mpd else ('<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>' if is_hls else "")
             dinit = f'<script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>' if is_mpd else (f'<script>var v=document.getElementById("v");if(Hls.isSupported()){{var h=new Hls();h.loadSource("{surl}");h.attachMedia(v);}}else{{v.src="{surl}";}}</script>' if is_hls else "")
             src = "" if (is_mpd or is_hls) else f'src="{surl}"'
@@ -333,7 +328,14 @@ def fmt_stream(s):
     sz = f" • {s['size_mb']}MB" if s.get("size_mb") else ""
     lang = f" • {s['language']}" if s.get("language") else ""
     u = s.get("url", "").lower()
-    fmt = " [MPD]" if ".mpd" in u or s.get("format") == "dash" else (" [HLS]" if ".m3u8" in u or s.get("format") == "hls" else " [MP4]")
+    if any(k in u for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile", "1fichier"]):
+        fmt = " ☁️ [Cloud]"
+    elif ".mpd" in u or s.get("format") == "dash":
+        fmt = " [MPD]"
+    elif ".m3u8" in u or s.get("format") == "hls":
+        fmt = " [HLS]"
+    else:
+        fmt = " [MP4]"
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
 
 def quality_kb(streams, back="back:res"):
@@ -404,16 +406,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception: pass
             dubs = d.get("dubs", [])
             if len(dubs) > 1:
+                sess["details_raw"] = d
                 sess["dubs"] = dubs
                 kb = [[InlineKeyboardButton(f"🎙 {x.get('label') or x.get('language')}", callback_data=f"dub:{i}")] for i, x in enumerate(dubs)]
                 kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back:res")])
                 await safe_edit(q, f"{info_header(d)}\n\nSelect audio language:{FOOTER}", InlineKeyboardMarkup(kb))
             else: await show_details(q, sess, d, uid=uid)
         elif data.startswith("dub:"):
-            dub = sess["dubs"][int(data.split(":")[1])]; sess["item"]["id"] = dub["id"]
+            dub = sess["dubs"][int(data.split(":")[1])]
             await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
-            d = await run_bridge("details", sess["item"]["provider"], dub["id"])
-            if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
+            if sess["item"].get("provider") in ("vegamovies", "katmovieshd", "rogmovies"):
+                d = dict(sess.get("details_raw", {}))
+                d["streams"] = dub.get("streams", [])
+            else:
+                sess["item"]["id"] = dub["id"]
+                d = await run_bridge("details", sess["item"]["provider"], dub["id"])
+                if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
             await show_details(q, sess, d, uid=uid)
         elif data.startswith("s:"):
             season = sess["seasons"][int(data.split(":")[1])]; sess["season"] = season; kb, row = [], []
@@ -447,12 +455,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             d = sess.get("details", {})
             STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "codec": st.get("codec"), "title": title, "qual": qual, "safe": safe, "rating": d.get("rating"), "captions": sess.get("captions", [])}
-            kb = [
-                [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
-                [InlineKeyboardButton("⬇️ 1-Click Download", url=f"{BASE_URL}/dl/{sid}")],
-            ]
-            if str(st.get("url", "")).startswith("http") and not str(st.get("url", "")).startswith(BASE_URL):
-                kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=st["url"])])
+            is_cloud = any(k in st["url"].lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile", "1fichier"])
+            if is_cloud:
+                kb = [
+                    [InlineKeyboardButton("⚡ Open Cloud Download Page", url=st["url"])],
+                ]
+            else:
+                kb = [
+                    [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
+                    [InlineKeyboardButton("⬇️ 1-Click Download", url=f"{BASE_URL}/dl/{sid}")],
+                ]
             if sess.get("season") and sess.get("e_idx", -1) + 1 < len(sess["season"]["episodes"]):
                 kb.append([InlineKeyboardButton("⏭ Next Episode", callback_data=f"e:{sess['e_idx']+1}")])
             kb.append([InlineKeyboardButton("🔗 Copy URL", callback_data=f"url:{idx}"), InlineKeyboardButton("⬅️ Back", callback_data="back:q")])

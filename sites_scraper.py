@@ -144,11 +144,23 @@ def search_custom_provider(prov: str, query: str) -> list:
         return search_wordpress(prov, domain, query)
     return []
 
-def extract_resolution(text: str) -> int:
-    m = re.search(r"\b(2160|1080|720|480)p?\b", text, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return 720
+def simplify_language(raw_lang: str) -> str:
+    l_low = raw_lang.lower()
+    if "hindi" in l_low and any(e in l_low for e in ["eng", "dual", "multi"]):
+        return "Hindi + English (Dual Audio)"
+    elif "hindi" in l_low:
+        return "Hindi Dubbed"
+    elif "eng" in l_low:
+        return "English"
+    elif "tamil" in l_low:
+        return "Tamil"
+    elif "telugu" in l_low:
+        return "Telugu"
+    elif "malayalam" in l_low:
+        return "Malayalam"
+    elif "kannada" in l_low:
+        return "Kannada"
+    return "Hindi + English (Dual Audio)"
 
 def get_custom_details(prov: str, post_url: str) -> dict:
     html = fetch_html(post_url)
@@ -161,63 +173,86 @@ def get_custom_details(prov: str, post_url: str) -> dict:
     poster_m = re.search(r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
     poster = poster_m.group(1) if poster_m else None
 
-    streams = []
+    # Find all download links with their surrounding HTML context
+    link_matches = list(re.finditer(r'href=["\'](https?://[^"\']+)["\']', html))
+    all_streams = []
     seen_urls = set()
 
-    a_tags = re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.DOTALL)
-    for href, raw_btn in a_tags:
-        btn_text = re.sub(r'<[^>]+>', '', raw_btn).strip()
-        lower_href = href.lower()
-        if "playdrive" in lower_href:
-            streams.append({
-                "quality": "Direct Stream (PlayDrive)",
-                "resolution": 1080,
-                "url": href,
-                "mirror": "PlayDrive",
-                "format": "mp4",
-            })
+    for m in link_matches:
+        url = m.group(1)
+        url_lower = url.lower()
+        if not any(k in url_lower for k in ["nexdrive", "hubcloud", "hubdrive", "playdrive", "fastdl", "vcloud", "gofile", "megaup"]):
             continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
 
-        if "nexdrive" in lower_href:
-            nex_html = fetch_html(href, timeout=8)
-            if nex_html:
-                sub_links = re.findall(r'href=["\']([^"\']+)["\']', nex_html)
-                for sl in sub_links:
-                    if sl in seen_urls:
-                        continue
-                    sl_lower = sl.lower()
-                    if any(k in sl_lower for k in ["fastdl", "vcloud", "gofile", "megaup", "filebee", "vikingfile"]):
-                        seen_urls.add(sl)
-                        lbl = "FastDL" if "fastdl" in sl_lower else ("V-Cloud" if "vcloud" in sl_lower else "Cloud DL")
-                        res = extract_resolution(btn_text + " " + sl)
-                        streams.append({
-                            "quality": f"{res}p [{lbl}]",
-                            "resolution": res,
-                            "url": sl,
-                            "mirror": lbl,
-                            "format": "mp4",
-                        })
+        pos = m.start()
+        context = html[max(0, pos - 350):pos]
+        clean_context = re.sub(r'<[^>]+>', ' ', context)
+        clean_context = " ".join(clean_context.split())
 
-        if any(k in lower_href for k in ["hubcloud", "hubdrive", "fastdl", "vcloud", "gofile"]):
-            if href not in seen_urls:
-                seen_urls.add(href)
-                res = extract_resolution(btn_text + " " + href)
-                lbl = "HubCloud" if "hubcloud" in lower_href else ("FastDL" if "fastdl" in lower_href else "Cloud DL")
-                streams.append({
-                    "quality": f"{res}p [{lbl}]",
-                    "resolution": res,
-                    "url": href,
-                    "mirror": lbl,
-                    "format": "mp4",
-                })
+        # Extract resolution
+        res = 720
+        res_m = re.search(r'\b(2160|1080|720|480)p?\b|\b(4k)\b', clean_context, re.IGNORECASE)
+        if res_m:
+            v = res_m.group(1) or res_m.group(2)
+            res = 2160 if v.lower() == "4k" else int(v)
 
-    streams.sort(key=lambda s: s.get("resolution", 0), reverse=True)
+        # Extract language
+        lang = "Hindi + English (Dual Audio)"
+        lang_m = re.search(r'\[([^\]]*?(?:Hindi|English|Dual|Multi|Tamil|Telugu|Dubbed)[^\]]*?)\]|\{([^\}]*?(?:Hindi|English|Dual|Multi|Tamil|Telugu|Dubbed)[^\}]*?)\}|\b(Dual\s+Audio|Hindi\s+Dubbed|Multi\s+Audio)\b', clean_context, re.IGNORECASE)
+        if lang_m:
+            matched_lang = lang_m.group(1) or lang_m.group(2) or lang_m.group(3)
+            lang = simplify_language(matched_lang)
+
+        # Extract file size
+        size_str = ""
+        size_m = re.search(r'\[(\d+(?:\.\d+)?\s*(?:MB|GB)(?:/E)?)\]', clean_context, re.IGNORECASE)
+        if size_m:
+            size_str = size_m.group(1)
+
+        # Mirror label
+        lbl = "PlayDrive" if "playdrive" in url_lower else ("V-Cloud" if "vcloud" in url_lower else ("FastDL" if "fastdl" in url_lower else ("HubCloud" if "hubcloud" in url_lower else "Cloud DL")))
+        
+        q_label = f"{res}p" + (f" [{size_str}]" if size_str else "") + f" • {lang}"
+
+        all_streams.append({
+            "quality": q_label,
+            "resolution": res,
+            "language": lang,
+            "size": size_str,
+            "url": url,
+            "mirror": lbl,
+            "format": "mp4",
+        })
+
+    # Group streams by language to create Dubs / Audio selection if multiple languages exist
+    lang_groups = {}
+    for st in all_streams:
+        lang_groups.setdefault(st["language"], []).append(st)
+
+    dubs = []
+    if len(lang_groups) > 1:
+        for idx, (lang_name, l_streams) in enumerate(lang_groups.items()):
+            l_streams.sort(key=lambda s: s.get("resolution", 0), reverse=True)
+            dubs.append({
+                "id": f"custom_dub_{idx}",
+                "language": lang_name,
+                "label": lang_name,
+                "streams": l_streams,
+            })
+        final_streams = []
+    else:
+        all_streams.sort(key=lambda s: s.get("resolution", 0), reverse=True)
+        final_streams = all_streams[:15]
+
     return {
         "title": page_title,
         "type": "Movie",
         "poster": poster,
-        "streams": streams[:15],
-        "dubs": [],
+        "streams": final_streams,
+        "dubs": dubs,
         "seasons": [],
         "captions": [],
     }
