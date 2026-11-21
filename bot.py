@@ -45,9 +45,9 @@ def filter_results(items, query):
     pool.sort(key=lambda x: (0 if x.get("title", "").lower().startswith(query.lower()) else 1, len(x.get("title", ""))))
     return pool[:10]
     class ProxyHandler(BaseHTTPRequestHandler):
-    def log_message(self, *args): pass
-    def do_HEAD(self): self.send_response(200); self.end_headers()
-    def do_GET(self):
+        def log_message(self, *args): pass
+        def do_HEAD(self): self.send_response(200); self.end_headers()
+        def do_GET(self):
         if self.path in ("/", "/health"):
             self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
         clean_path = self.path.split("?", 1)[0]
