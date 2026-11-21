@@ -3,9 +3,10 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from media_resolver import AsyncMediaClient, SessionStore
 
 logging.basicConfig(level=logging.INFO)
-TOKEN = os.environ["TELEGRAM_TOKEN"]
+TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 ADMIN_ID = 7641123461
 DB, FAV_DB, HIST_DB = "users.json", "favs.json", "history.json"
 BRIDGE = os.path.abspath("tg_bridge")
@@ -17,6 +18,8 @@ PROVIDERS = [
     ("bdix_circleftp", "Server 4"), ("bdix_dhakaflix", "Server 5"), ("addons", "Server 6"),
 ]
 SESSIONS, STREAMS_CACHE = {}, {}
+MEDIA_SESSIONS = SessionStore()
+MEDIA_CLIENT = AsyncMediaClient(timeout=15.0, max_retries=2, max_redirects=5)
 
 def jload(p, d): return json.load(open(p)) if os.path.exists(p) else d
 def jsave(p, d): json.dump(d, open(p, "w"))
@@ -33,14 +36,58 @@ def filter_results(items, query):
     pool.sort(key=lambda x: (0 if x.get("title", "").lower().startswith(query.lower()) else 1, len(x.get("title", ""))))
     return pool[:10]
 
+async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMediaClient = None):
+    """Resolve Server 2 (4KHDHub) mirror URLs via media_resolver without bypassing protected pages."""
+    mc = client or MEDIA_CLIENT
+    resolved, errors, seen_urls = [], [], set()
+    for st in raw_streams or []:
+        raw_url = (st.get("url") or "").strip()
+        mirror_lbl = st.get("mirror") or st.get("quality") or "Mirror"
+        if not raw_url:
+            errors.append(f"{mirror_lbl}: Empty URL")
+            continue
+        try:
+            insp = await mc.inspect(raw_url)
+        except Exception as exc:
+            errors.append(f"{mirror_lbl}: {exc}")
+            continue
+        if insp.error:
+            errors.append(f"{mirror_lbl}: {insp.error}")
+            continue
+        if not insp.variants:
+            errors.append(f"{mirror_lbl}: Unsupported or protected mirror page")
+            continue
+        for v in insp.variants:
+            if v.url in seen_urls:
+                continue
+            seen_urls.add(v.url)
+            q_lbl = v.quality if v.quality != "Unknown" else (st.get("quality") or "Stream")
+            resolved.append({
+                "url": v.url,
+                "format": v.format,
+                "quality": q_lbl,
+                "resolution": v.height or st.get("resolution") or 0,
+                "size_mb": st.get("size_mb"),
+                "language": st.get("language"),
+                "codec": st.get("codec"),
+                "headers": st.get("headers") or [],
+                "mirror": st.get("mirror"),
+                "resolved": True,
+            })
+    resolved.sort(key=lambda x: int(x.get("resolution") or 0), reverse=True)
+    MEDIA_SESSIONS.set(uid, "server2_streams", resolved)
+    MEDIA_SESSIONS.set(uid, "server2_errors", errors)
+    return resolved, errors
+
 class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self):
         p = self.path.split("?", 1)[0].strip("/").split("/")
         self.send_response(200)
         if len(p) >= 2 and p[0] == "s" and p[1] in STREAMS_CACHE:
-            u = STREAMS_CACHE[p[1]]["url"]
-            self.send_header("Content-Type", "application/dash+xml" if ".mpd" in u else "video/mp4")
+            u = STREAMS_CACHE[p[1]]["url"].lower()
+            ctype = "application/dash+xml" if ".mpd" in u else ("application/vnd.apple.mpegurl" if ".m3u8" in u else "video/mp4")
+            self.send_header("Content-Type", ctype)
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
     def do_GET(self):
@@ -56,13 +103,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
         if act == "vlc":
             ilink = f"intent://{HOST}/s/{sid}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end"
-            is_mpd = ".mpd" in info["url"]
-            djs = '<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>' if is_mpd else ""
-            dinit = f'<script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>' if is_mpd else ""
-            src = "" if is_mpd else f'src="{surl}"'
+            u_low = info["url"].lower()
+            is_mpd = ".mpd" in u_low
+            is_hls = ".m3u8" in u_low
+            djs = '<script src="https://cdn.dashjs.org/latest/dash.all.min.js"></script>' if is_mpd else ('<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>' if is_hls else "")
+            dinit = f'<script>dashjs.MediaPlayer().create().initialize(document.getElementById("v"),"{surl}",true);</script>' if is_mpd else (f'<script>var v=document.getElementById("v");if(Hls.isSupported()){{var h=new Hls();h.loadSource("{surl}");h.attachMedia(v);}}else{{v.src="{surl}";}}</script>' if is_hls else "")
+            src = "" if (is_mpd or is_hls) else f'src="{surl}"'
             trks = "".join(f'<track kind="subtitles" label="{esc(c["name"])}" src="{BASE_URL}/sub/{sid}/{i}">' for i, c in enumerate(info.get("captions", [])[:5]))
             meta = f'⭐ {esc(info["rating"])} • ' if info.get("rating") else ""
-            h265_note = '<p style="font-size:12px;color:#fbbf24">⚠️ H.265: If screen is black, tap ⋮ → Open in Chrome → Open in VLC App</p>' if "h265" in info["url"].lower() or "hevc" in str(info.get("codec", "")).lower() else ""
+            h265_note = '<p style="font-size:12px;color:#fbbf24">⚠️ H.265: If screen is black, tap ⋮ → Open in Chrome → Open in VLC App</p>' if "h265" in u_low or "hevc" in str(info.get("codec", "")).lower() else ""
             page = (
                 f'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
                 f'<title>{esc(info["title"])}</title>{djs}'
@@ -94,7 +143,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             )
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(page.encode()); return
-        if act == "sub" and len(parts) >= 3:
+                    if act == "sub" and len(parts) >= 3:
             idx = int(parts[2]); caps = info.get("captions", [])
             if idx < len(caps):
                 try:
@@ -104,7 +153,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(txt.encode()); return
                 except Exception: pass
             self.send_response(404); self.end_headers(); return
-        if act == "s" and ".mpd" in info["url"]:
+        if act == "s" and ".mpd" in info["url"].lower():
             try:
                 xml = httpx.get(info["url"], headers=hdrs, follow_redirects=True, timeout=15.0).text
                 base = f"{BASE_URL}/seg/{sid}/"
@@ -132,7 +181,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     if h in r2.headers: self.send_header(h, r2.headers[h])
                                 self.send_header("Access-Control-Allow-Origin", "*")
                                 if act == "dl":
-                                    ext = ".mpd" if ".mpd" in info["url"] else ".mp4"
+                                    ext = ".mpd" if ".mpd" in info["url"].lower() else (".m3u8" if ".m3u8" in info["url"].lower() else ".mp4")
                                     self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
                                 self.end_headers()
                                 for chunk in r2.iter_bytes(65536): self.wfile.write(chunk)
@@ -142,7 +191,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             if h in r.headers: self.send_header(h, r.headers[h])
                         self.send_header("Access-Control-Allow-Origin", "*")
                         if act == "dl":
-                            ext = ".mpd" if ".mpd" in info["url"] else ".mp4"
+                            ext = ".mpd" if ".mpd" in info["url"].lower() else (".m3u8" if ".m3u8" in info["url"].lower() else ".mp4")
                             self.send_header("Content-Disposition", f'attachment; filename="{info["safe"]}{ext}"')
                         self.end_headers()
                         for chunk in r.iter_bytes(65536): self.wfile.write(chunk)
@@ -243,10 +292,10 @@ def fmt_stream(s):
     q = s.get("quality") or (f"{s['resolution']}p" if s.get("resolution") else "Stream")
     sz = f" • {s['size_mb']}MB" if s.get("size_mb") else ""
     lang = f" • {s['language']}" if s.get("language") else ""
-    fmt = " [MPD]" if ".mpd" in s.get("url", "") else " [MP4]"
+    u = s.get("url", "").lower()
+    fmt = " [MPD]" if ".mpd" in u or s.get("format") == "dash" else (" [HLS]" if ".m3u8" in u or s.get("format") == "hls" else " [MP4]")
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
-
-def quality_kb(streams, back="back:res"):
+    def quality_kb(streams, back="back:res"):
     kb = [[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])]
     kb.append([InlineKeyboardButton("⭐ Save", callback_data="save"), InlineKeyboardButton("⬅️ Back", callback_data=back)])
     return InlineKeyboardMarkup(kb)
@@ -258,7 +307,7 @@ def info_header(d):
     if d.get("plot"): parts.append(f"<i>{esc(d['plot'][:200])}...</i>")
     return "\n".join(parts)
 
-async def show_details(q, sess, d):
+async def show_details(q, sess, d, uid=0):
     sess["details"] = d; hdr = info_header(d); seasons = d.get("seasons", [])
     if seasons:
         sess["seasons"] = seasons
@@ -267,9 +316,14 @@ async def show_details(q, sess, d):
         await safe_edit(q, f"{hdr}\n\nChoose a season:{FOOTER}", InlineKeyboardMarkup(kb))
     else:
         streams = d.get("streams", [])
+        prov = sess.get("item", {}).get("provider") or sess.get("prov")
+        s2_errors = []
+        if prov == "fourkhdhub" and streams:
+            streams, s2_errors = await resolve_server2_streams(uid, streams)
         sess["streams"], sess["captions"] = streams, d.get("captions", [])
         if not streams:
-            await safe_edit(q, f"{hdr}\n\n❌ <b>No streams found.</b>{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
+            reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
+            await safe_edit(q, f"{hdr}\n\n❌ <b>No playable streams found.</b>{reason}{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
         await safe_edit(q, f"{hdr}\n\nSelect stream quality:{FOOTER}", quality_kb(streams))
 
 def save_history(uid, item):
@@ -311,13 +365,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kb = [[InlineKeyboardButton(f"🎙 {x.get('label') or x.get('language')}", callback_data=f"dub:{i}")] for i, x in enumerate(dubs)]
                 kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back:res")])
                 await safe_edit(q, f"{info_header(d)}\n\nSelect audio language:{FOOTER}", InlineKeyboardMarkup(kb))
-            else: await show_details(q, sess, d)
+            else: await show_details(q, sess, d, uid=uid)
         elif data.startswith("dub:"):
             dub = sess["dubs"][int(data.split(":")[1])]; sess["item"]["id"] = dub["id"]
             await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
             d = await run_bridge("details", sess["item"]["provider"], dub["id"])
             if d.get("error"): await safe_edit(q, f"❌ {esc(d['error'])}{FOOTER}"); return
-            await show_details(q, sess, d)
+            await show_details(q, sess, d, uid=uid)
         elif data.startswith("s:"):
             season = sess["seasons"][int(data.split(":")[1])]; sess["season"] = season; kb, row = [], []
             for i, ep in enumerate(season["episodes"]):
@@ -332,11 +386,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(q, f"⏳ Fetching <b>S{ep['season']:02d}E{ep['number']:02d}</b>...{FOOTER}")
             res = await run_bridge("streams", item["provider"], item["id"], str(ep["season"]), str(ep["number"]))
             streams = res.get("streams", [])
+            prov = item.get("provider") or sess.get("prov")
+            s2_errors = []
+            if prov == "fourkhdhub" and streams:
+                streams, s2_errors = await resolve_server2_streams(uid, streams)
             sess["streams"], sess["captions"] = streams, res.get("captions", [])
-            if not streams: await safe_edit(q, f"❌ No streams found.{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:eps")]])); return
+            if not streams:
+                reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
+                await safe_edit(q, f"❌ No playable streams found.{reason}{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:eps")]])); return
             await safe_edit(q, f"📺 <b>{esc(item['title'])}</b> • S{ep['season']:02d}E{ep['number']:02d}\nSelect quality:{FOOTER}", quality_kb(streams, "back:eps"))
         elif data.startswith("q:"):
             idx = int(data.split(":")[1]); st = sess["streams"][idx]
+            if not str(st.get("url", "")).startswith(("http://", "https://")):
+                await safe_edit(q, f"❌ Invalid or unavailable stream URL.{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:q")]])); return
             qual = st.get("quality") or f"{st.get('resolution', '')}p"; title = sess["item"]["title"]
             save_history(uid, sess["item"]); sid = uuid.uuid4().hex[:8]
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
@@ -349,7 +411,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(q, f"🎬 <b>{esc(title)}</b>\n🎞 Quality: <b>{esc(qual)}</b>\n\nTap below to play or download:{FOOTER}", InlineKeyboardMarkup(kb))
         elif data == "back:res":
             await safe_edit(q, f"🍿 <b>{esc(sess.get('query', 'Results'))}</b>\nPick a title:{FOOTER}", results_kb(sess.get("results", []), sess.get("prov")), force_text=True)
-        elif data == "back:seasons": await show_details(q, sess, sess["details"])
+        elif data == "back:seasons": await show_details(q, sess, sess["details"], uid=uid)
         elif data == "back:eps":
             season = sess["season"]; kb, row = [], []
             for i, ep in enumerate(season["episodes"]):
@@ -364,17 +426,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await safe_edit(q, f"❌ Error: <code>{esc(str(e)[:400])}</code>{FOOTER}")
 
-threading.Thread(target=start_server, daemon=True).start()
-app = Application.builder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("trending", trending_cmd))
-app.add_handler(CommandHandler("fav", fav_cmd))
-app.add_handler(CommandHandler("history", hist_cmd))
-app.add_handler(CommandHandler("allow", allow))
-app.add_handler(CommandHandler("remove", remove))
-app.add_handler(CommandHandler("users", list_users))
-app.add_handler(CommandHandler("movie", movie_search))
-app.add_handler(CallbackQueryHandler(on_callback))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-app.run_polling()
-            
+if __name__ == "__main__":
+    if not TOKEN:
+        raise KeyError("TELEGRAM_TOKEN")
+    threading.Thread(target=start_server, daemon=True).start()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("trending", trending_cmd))
+    app.add_handler(CommandHandler("fav", fav_cmd))
+    app.add_handler(CommandHandler("history", hist_cmd))
+    app.add_handler(CommandHandler("allow", allow))
+    app.add_handler(CommandHandler("remove", remove))
+    app.add_handler(CommandHandler("users", list_users))
+    app.add_handler(CommandHandler("movie", movie_search))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.run_polling()
+    
