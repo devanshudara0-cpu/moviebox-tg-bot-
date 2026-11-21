@@ -209,7 +209,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         self.end_headers()
                         for chunk in r.iter_bytes(262144): self.wfile.write(chunk)
             except Exception: pass
-    def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
+def start_server(): ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "10000"))), ProxyHandler).serve_forever()
 async def safe_edit(q, text, markup=None, force_text=False):
     if q.message.photo and force_text:
         await q.message.delete()
