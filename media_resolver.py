@@ -124,7 +124,7 @@ def parse_m3u8(playlist_text: str, base_url: str) -> List[StreamVariant]:
                 )
     variants.sort(key=lambda v: (v.height or 0, v.bandwidth or 0), reverse=True)
     return variants
-    def parse_mpd(mpd_xml: str, manifest_url: str) -> List[StreamVariant]:
+def parse_mpd(mpd_xml: str, manifest_url: str) -> List[StreamVariant]:
     """Parse a DASH MPD manifest and return discovered video representations."""
     variants: List[StreamVariant] = []
     root = ET.fromstring(mpd_xml)
