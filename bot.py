@@ -305,7 +305,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             st = sess["streams"][idx]
             qual = st.get("quality") or f"{st.get('resolution', '')}p"
             title = sess["item"]["title"]
-                      save_history(uid, sess["item"])
+            save_history(uid, sess["item"])
             sid = uuid.uuid4().hex[:8]
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             d = sess.get("details", {})
