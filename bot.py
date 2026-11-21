@@ -44,44 +44,18 @@ def filter_results(items, query):
     return pool[:10]
 
 async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMediaClient = None):
-    """Resolve Server 2 (4KHDHub) mirror URLs via media_resolver without bypassing protected pages."""
-    mc = client or MEDIA_CLIENT
-    resolved, errors, seen_urls = [], [], set()
+    """Preserve MovieBox-Tui bridge streams and headers for HDHub, ensuring direct VLC playback."""
+    resolved, seen_urls = [], set()
     for st in raw_streams or []:
         raw_url = (st.get("url") or "").strip()
-        mirror_lbl = st.get("mirror") or st.get("quality") or "Mirror"
-        if not raw_url:
-            errors.append(f"{mirror_lbl}: Empty URL")
+        if not raw_url or raw_url in seen_urls:
             continue
-        try:
-            ares = await SERVER2_ADAPTERS.resolve(raw_url, mc)
-        except Exception as exc:
-            errors.append(f"{mirror_lbl}: {exc}")
-            continue
-        if not ares.supported or not ares.variants:
-            errors.append(f"{mirror_lbl}: {ares.limitation or 'Unsupported or protected mirror page'}")
-            continue
-        for v in ares.variants:
-            if v.url in seen_urls:
-                continue
-            seen_urls.add(v.url)
-            q_lbl = v.quality if v.quality != "Unknown" else (st.get("quality") or "Stream")
-            resolved.append({
-                "url": v.url,
-                "format": v.format,
-                "quality": q_lbl,
-                "resolution": v.height or st.get("resolution") or 0,
-                "size_mb": st.get("size_mb"),
-                "language": st.get("language"),
-                "codec": st.get("codec"),
-                "headers": st.get("headers") or [],
-                "mirror": st.get("mirror"),
-                "resolved": True,
-            })
+        seen_urls.add(raw_url)
+        resolved.append(st)
     resolved.sort(key=lambda x: int(x.get("resolution") or 0), reverse=True)
     MEDIA_SESSIONS.set(uid, "server2_streams", resolved)
-    MEDIA_SESSIONS.set(uid, "server2_errors", errors)
-    return resolved, errors
+    MEDIA_SESSIONS.set(uid, "server2_errors", [])
+    return resolved, []
 class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self):
