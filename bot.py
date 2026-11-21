@@ -78,7 +78,7 @@ async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMedi
     MEDIA_SESSIONS.set(uid, "server2_streams", resolved)
     MEDIA_SESSIONS.set(uid, "server2_errors", errors)
     return resolved, errors
-    class ProxyHandler(BaseHTTPRequestHandler):
+class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self):
         p = self.path.split("?", 1)[0].strip("/").split("/")
@@ -338,7 +338,7 @@ async def show_details(q, sess, d, uid=0):
             reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
             await safe_edit(q, f"{hdr}\n\n❌ <b>No playable streams found.</b>{reason}{FOOTER}", InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back:res")]])); return
         await safe_edit(q, f"{hdr}\n\nSelect stream quality:{FOOTER}", quality_kb(streams))
-    def save_history(uid, item):
+def save_history(uid, item):
     all_h = jload(HIST_DB, {})
     h = [x for x in all_h.get(str(uid), []) if x.get("id") != item.get("id")]
     h.insert(0, item); all_h[str(uid)] = h[:10]; jsave(HIST_DB, all_h)
