@@ -35,7 +35,14 @@ def filter_results(items, query):
 
 class ProxyHandler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
-    def do_HEAD(self): self.send_response(200); self.end_headers()
+    def do_HEAD(self):
+        p = self.path.split("?", 1)[0].strip("/").split("/")
+        self.send_response(200)
+        if len(p) >= 2 and p[0] == "s" and p[1] in STREAMS_CACHE:
+            u = STREAMS_CACHE[p[1]]["url"]
+            self.send_header("Content-Type", "application/dash+xml" if ".mpd" in u else "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
     def do_GET(self):
         if self.path in ("/", "/health"):
             self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
@@ -361,4 +368,3 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
-                    
