@@ -109,6 +109,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_response(502); self.end_headers(); return
         if act in ("s", "dl", "seg"):
             target = info["url"]
+            if act == "s" and ".mp4" in target and not any(k.lower() == "cookie" for k in hdrs):
+                self.send_response(302); self.send_header("Location", target); self.end_headers(); return
             if act == "seg":
                 sub = "/".join(parts[2:])
                 if "?" in self.path: sub += "?" + self.path.split("?", 1)[1]
@@ -359,4 +361,4 @@ app.add_handler(CommandHandler("movie", movie_search))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 app.run_polling()
-                
+                    
