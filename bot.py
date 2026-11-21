@@ -143,7 +143,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             )
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(page.encode()); return
-            if act == "sub" and len(parts) >= 3:
+        if act == "sub" and len(parts) >= 3:
             idx = int(parts[2]); caps = info.get("captions", [])
             if idx < len(caps):
                 try:
@@ -295,7 +295,7 @@ def fmt_stream(s):
     u = s.get("url", "").lower()
     fmt = " [MPD]" if ".mpd" in u or s.get("format") == "dash" else (" [HLS]" if ".m3u8" in u or s.get("format") == "hls" else " [MP4]")
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
-    def quality_kb(streams, back="back:res"):
+def quality_kb(streams, back="back:res"):
     kb = [[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])]
     kb.append([InlineKeyboardButton("⭐ Save", callback_data="save"), InlineKeyboardButton("⬅️ Back", callback_data=back)])
     return InlineKeyboardMarkup(kb)
