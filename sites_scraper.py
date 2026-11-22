@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import base64
 import urllib.parse
 import urllib.request
 import gzip
@@ -14,7 +15,7 @@ DEFAULT_DOMAINS = {
     "vegamovies": "https://vegamovies.latino",
     "rogmovies": "https://rogmovies.beauty",
     "katmovieshd": "https://katmoviehd.to",
-    "hdhub4u": "https://hdboss.in",
+    "hdhub4u": "https://4khdhub.one",
 }
 
 def load_domains() -> dict:
@@ -181,47 +182,59 @@ def get_custom_details(prov: str, post_url: str) -> dict:
     for m in link_matches:
         url = m.group(1)
         url_lower = url.lower()
-        if not any(k in url_lower for k in ["nexdrive", "hubcloud", "hubdrive", "playdrive", "fastdl", "vcloud", "gofile", "megaup"]):
+        if not any(k in url_lower for k in ["nexdrive", "hubcloud", "hubdrive", "greenmotors", "playdrive", "fastdl", "vcloud", "gofile", "megaup"]):
             continue
         if url in seen_urls:
             continue
         seen_urls.add(url)
 
         pos = m.start()
-        context = html[max(0, pos - 350):pos]
+        context = html[max(0, pos - 600):pos]
         clean_context = re.sub(r'<[^>]+>', ' ', context)
         clean_context = " ".join(clean_context.split())
 
-        # Extract resolution
+        # Extract resolution: pick the LAST occurrence in clean context before the link
         res = 720
-        res_m = re.search(r'\b(2160|1080|720|480)p?\b|\b(4k)\b', clean_context, re.IGNORECASE)
-        if res_m:
-            v = res_m.group(1) or res_m.group(2)
-            res = 2160 if v.lower() == "4k" else int(v)
-
-        # Extract language
-        lang = "Hindi + English (Dual Audio)"
-        lang_m = re.search(r'\[([^\]]*?(?:Hindi|English|Dual|Multi|Tamil|Telugu|Dubbed)[^\]]*?)\]|\{([^\}]*?(?:Hindi|English|Dual|Multi|Tamil|Telugu|Dubbed)[^\}]*?)\}|\b(Dual\s+Audio|Hindi\s+Dubbed|Multi\s+Audio)\b', clean_context, re.IGNORECASE)
-        if lang_m:
-            matched_lang = lang_m.group(1) or lang_m.group(2) or lang_m.group(3)
-            lang = simplify_language(matched_lang)
+        res_matches = list(re.finditer(r'\b(2160|1080|720|480)p?\b|\b(4k)\b', clean_context, re.IGNORECASE))
+        if res_matches:
+            val = res_matches[-1].group(1) or res_matches[-1].group(2)
+            res = 2160 if val.lower() == "4k" else int(val)
 
         # Extract file size
         size_str = ""
-        size_m = re.search(r'\[(\d+(?:\.\d+)?\s*(?:MB|GB)(?:/E)?)\]', clean_context, re.IGNORECASE)
-        if size_m:
-            size_str = size_m.group(1)
+        size_matches = list(re.finditer(r'\b(\d+(?:\.\d+)?\s*(?:MB|GB)(?:/E)?)\b', clean_context, re.IGNORECASE))
+        if size_matches:
+            size_str = size_matches[-1].group(1).strip("[]")
+
+        # Extract language from context near resolution
+        near_text = clean_context[max(0, len(clean_context) - 200):]
+        near_low = near_text.lower()
+        if "hindi" in near_low and any(k in near_low for k in ["eng", "dual", "multi"]):
+            lang = "Hindi + English (Dual Audio)"
+        elif "hindi" in near_low:
+            lang = "Hindi Dubbed"
+        elif "english" in near_low or "eng" in near_low:
+            lang = "English"
+        elif "tamil" in near_low:
+            lang = "Tamil"
+        elif "telugu" in near_low:
+            lang = "Telugu"
+        elif "malayalam" in near_low:
+            lang = "Malayalam"
+        elif "kannada" in near_low:
+            lang = "Kannada"
+        else:
+            lang = "Hindi + English (Dual Audio)"
 
         # Mirror label
         lbl = "PlayDrive" if "playdrive" in url_lower else ("V-Cloud" if "vcloud" in url_lower else ("FastDL" if "fastdl" in url_lower else ("HubCloud" if "hubcloud" in url_lower else "Cloud DL")))
-        
-        q_label = f"{res}p" + (f" [{size_str}]" if size_str else "") + f" • {lang}"
 
         all_streams.append({
-            "quality": q_label,
+            "quality": f"{res}p",
             "resolution": res,
             "language": lang,
             "size": size_str,
+            "size_str": size_str,
             "url": url,
             "mirror": lbl,
             "format": "mp4",
@@ -256,3 +269,106 @@ def get_custom_details(prov: str, post_url: str) -> dict:
         "seasons": [],
         "captions": [],
     }
+
+def rot13(s: str) -> str:
+    return s.translate(str.maketrans("ABCDEFGHIJKLMabcdefghijklmNOPQRSTUVWXYZnopqrstuvwxyz", "NOPQRSTUVWXYZnopqrstuvwxyzABCDEFGHIJKLMabcdefghijklm"))
+
+def decode_greenmotors(html: str):
+    m = re.search(r"s\(\s*[\x27\"]o[\x27\"]\s*,\s*[\x27\"]([^\x27\"]+)[\x27\"]", html)
+    if not m:
+        return None
+    try:
+        p = m.group(1)
+        s1 = base64.b64decode(p).decode("utf-8")
+        s2 = base64.b64decode(s1).decode("utf-8")
+        s3 = rot13(s2)
+        s4 = base64.b64decode(s3).decode("utf-8")
+        data = json.loads(s4)
+        target_b64 = data.get("o", "")
+        return base64.b64decode(target_b64).decode("utf-8")
+    except Exception as exc:
+        logger.warning("decode_greenmotors error: %s", exc)
+        return None
+
+def resolve_hubcloud(hubcloud_url: str) -> str:
+    html = fetch_html(hubcloud_url)
+    if not html:
+        return hubcloud_url
+    res_link = None
+    m_dl = re.search(r"href=[\x27\"](https?://[^\x27\"]*(?:gamerxyt\.com|hubcloud\.php)[^\x27\"]*)[\x27\"]", html)
+    if m_dl:
+        res_link = m_dl.group(1)
+    else:
+        m_btn = re.search(r"<a[^>]+id=[\x27\"]download[\x27\"][^>]+href=[\x27\"](https?://[^\x27\"]+)[\x27\"]", html)
+        if m_btn:
+            res_link = m_btn.group(1)
+
+    if not res_link:
+        return hubcloud_url
+
+    r_html = fetch_html(res_link)
+    if not r_html:
+        return hubcloud_url
+
+    # 1. Cloudflare R2 direct stream
+    r2 = re.findall(r"href=[\x27\"](https?://[^\x27\"]*r2\.cloudflarestorage\.com[^\x27\"]+)[\x27\"]", r_html)
+    if r2:
+        return r2[0]
+
+    # 2. Watch Online pages.dev unwrapped stream
+    m_wo = re.search(r"href=[\x27\"](https?://[^\x27\"]*pages\.dev/\?u=([^\x27\"&]+)[^\x27\"]*)[\x27\"]", r_html)
+    if m_wo:
+        try:
+            dec = base64.b64decode(m_wo.group(2)).decode("utf-8")
+            if dec.startswith("http"):
+                return dec
+        except Exception:
+            pass
+
+    # 3. PixelDrain API direct stream
+    m_px = re.search(r"href=[\x27\"]https?://pixeldrain\.(?:dev|com)/u/([a-zA-Z0-9_-]+)[\x27\"]", r_html)
+    if m_px:
+        return f"https://pixeldrain.com/api/file/{m_px.group(1)}"
+
+    # 4. 10Gbps direct stream
+    m_10g = re.search(r"href=[\x27\"](https?://gpdl\.hubcloud[^\x27\"]+)[\x27\"]", r_html)
+    if m_10g:
+        return m_10g.group(1)
+
+    return hubcloud_url
+
+def resolve_direct_stream(url: str) -> str:
+    u = (url or "").strip()
+    u_low = u.lower()
+
+    if "greenmotors" in u_low or "greenmountmotors" in u_low:
+        html = fetch_html(u)
+        target = decode_greenmotors(html)
+        if target:
+            if "hubcloud" in target.lower():
+                return resolve_hubcloud(target)
+            return target
+
+    if "hubcloud" in u_low:
+        return resolve_hubcloud(u)
+
+    if "nexdrive" in u_low:
+        html = fetch_html(u)
+        m = re.search(r"href=[\x27\"](https?://fastdl[^\x27\"]+)[\x27\"]", html)
+        if m:
+            f_html = fetch_html(m.group(1))
+            re_m = re.search(r"var\s+reurl\s*=\s*[\x27\"]([^\x27\"]+)[\x27\"]", f_html)
+            if re_m:
+                return re_m.group(1)
+        for host in ["gofile.io", "megaup.net", "vcloud.my"]:
+            m_h = re.search(rf"href=[\x27\"](https?://[^\x27\"]*{host}[^\x27\"]*)[\x27\"]", html)
+            if m_h:
+                return m_h.group(1)
+
+    if "fastdl" in u_low:
+        f_html = fetch_html(u)
+        re_m = re.search(r"var\s+reurl\s*=\s*[\x27\"]([^\x27\"]+)[\x27\"]", f_html)
+        if re_m:
+            return re_m.group(1)
+
+    return u

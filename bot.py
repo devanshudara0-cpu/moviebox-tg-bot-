@@ -147,6 +147,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except Exception:
                 self.send_response(502); self.end_headers(); return
         if act == "dl" and not is_mpd and not is_hls:
+            if not hdrs:
+                self.send_response(302); self.send_header("Location", info["url"]); self.end_headers(); return
+        if act == "s" and not is_mpd and not is_hls and not hdrs:
             self.send_response(302); self.send_header("Location", info["url"]); self.end_headers(); return
         if act in ("s", "dl", "seg"):
             target = info["url"]
@@ -300,10 +303,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def fmt_stream(s):
     q = s.get("quality") or (f"{s['resolution']}p" if s.get("resolution") else "Stream")
-    sz = f" • {s['size_mb']}MB" if s.get("size_mb") else ""
+    sz = f" • {s['size_str']}" if s.get("size_str") else (f" • {s['size_mb']}MB" if s.get("size_mb") else "")
     lang = f" • {s['language']}" if s.get("language") else ""
     u = s.get("url", "").lower()
-    if any(k in u for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile", "1fichier"]):
+    if any(k in u for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile", "1fichier", "nexdrive", "greenmotors"]):
         fmt = " ☁️ [Cloud]"
     elif ".mpd" in u or s.get("format") == "dash":
         fmt = " [MPD]"
@@ -312,6 +315,17 @@ def fmt_stream(s):
     else:
         fmt = " [MP4]"
     return f"🎞 {q}{sz}{lang}{fmt}"[:60]
+
+def dedupe_streams(streams):
+    seen = set()
+    out = []
+    for s in streams or []:
+        sig = (s.get("resolution") or s.get("quality"), s.get("size_str") or s.get("size_mb"), s.get("language"))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append(s)
+    return out if out else (streams or [])
 
 def quality_kb(streams, back="back:res"):
     kb = [[InlineKeyboardButton(fmt_stream(s), callback_data=f"q:{i}")] for i, s in enumerate(streams[:15])]
@@ -333,11 +347,12 @@ async def show_details(q, sess, d, uid=0):
         kb.append([InlineKeyboardButton("⭐ Save", callback_data="save"), InlineKeyboardButton("⬅️ Back", callback_data="back:res")])
         await safe_edit(q, f"{hdr}\n\nChoose a season:{FOOTER}", InlineKeyboardMarkup(kb))
     else:
-        streams = d.get("streams", [])
+        streams = dedupe_streams(d.get("streams", []))
         prov = sess.get("item", {}).get("provider") or sess.get("prov")
         s2_errors = []
         if prov == "fourkhdhub" and streams:
             streams, s2_errors = await resolve_server2_streams(uid, streams)
+            streams = dedupe_streams(streams)
         sess["streams"], sess["captions"] = streams, d.get("captions", [])
         if not streams:
             reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
@@ -392,7 +407,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
             if sess["item"].get("provider") in ("vegamovies", "katmovieshd", "rogmovies"):
                 d = dict(sess.get("details_raw", {}))
-                d["streams"] = dub.get("streams", [])
+                d["streams"] = dedupe_streams(dub.get("streams", []))
             else:
                 sess["item"]["id"] = dub["id"]
                 d = await run_bridge("details", sess["item"]["provider"], dub["id"])
@@ -416,6 +431,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s2_errors = []
             if prov == "fourkhdhub" and streams:
                 streams, s2_errors = await resolve_server2_streams(uid, streams)
+            streams = dedupe_streams(streams)
             sess["streams"], sess["captions"] = streams, res.get("captions", [])
             if not streams:
                 reason = f"\n<i>{esc('; '.join(s2_errors[:2]))}</i>" if s2_errors else ""
@@ -429,13 +445,23 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_history(uid, sess["item"]); sid = uuid.uuid4().hex[:8]
             safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", f"{title}_{qual}")
             d = sess.get("details", {})
-            STREAMS_CACHE[sid] = {"url": st["url"], "headers": st.get("headers"), "codec": st.get("codec"), "title": title, "qual": qual, "safe": safe, "rating": d.get("rating"), "captions": sess.get("captions", [])}
+            raw_url = st["url"]
+            direct_url = raw_url
+            if any(k in raw_url.lower() for k in ["nexdrive", "fastdl", "greenmotors", "hubcloud", "hubdrive"]):
+                try:
+                    direct_url = await asyncio.to_thread(sites_scraper.resolve_direct_stream, raw_url)
+                except Exception as exc:
+                    logger.warning("direct resolution failed: %s", exc)
+
+            STREAMS_CACHE[sid] = {"url": direct_url, "raw_url": raw_url, "headers": st.get("headers"), "codec": st.get("codec"), "title": title, "qual": qual, "safe": safe, "rating": d.get("rating"), "captions": sess.get("captions", [])}
             kb = [
                 [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
-                [InlineKeyboardButton("⬇️ Download", url=f"{BASE_URL}/dl/{sid}")],
+                [InlineKeyboardButton("⬇️ 1-Click Direct Download", url=f"{BASE_URL}/dl/{sid}")],
             ]
-            if any(k in st["url"].lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile"]):
-                kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=st["url"])])
+            if direct_url != raw_url and str(direct_url).startswith("http"):
+                kb.append([InlineKeyboardButton("🚀 Direct High-Speed Link", url=direct_url)])
+            elif any(k in raw_url.lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile"]):
+                kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=raw_url)])
             if sess.get("season") and sess.get("e_idx", -1) + 1 < len(sess["season"]["episodes"]):
                 kb.append([InlineKeyboardButton("⏭ Next Episode", callback_data=f"e:{sess['e_idx']+1}")])
             kb.append([InlineKeyboardButton("🔗 Copy URL", callback_data=f"url:{idx}"), InlineKeyboardButton("⬅️ Back", callback_data="back:q")])
