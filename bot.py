@@ -1,4 +1,4 @@
-import os, json, subprocess, asyncio, re, html, threading, logging, uuid
+import os, json, subprocess, asyncio, re, html, threading, logging, uuid, urllib.parse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -6,6 +6,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from media_resolver import AsyncMediaClient, SessionStore
 from provider_adapters import AdapterRegistry
 import sites_scraper
+import app_portal
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -16,6 +17,7 @@ BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://leo-final-boss.onrende
 HOST = BASE_URL.replace("https://", "").replace("http://", "")
 FOOTER = '\n\n⚡ <i>Made by <a href="https://t.me/Dara_OG">@Dara_OG</a></i>'
 PROVIDERS = [
+    ("ottstream", "⚡ Server 0 (OTT)"),
     ("moviebox", "Server 1"),
     ("fourkhdhub", "Server 2"),
     ("vegamovies", "Server 3"),
@@ -84,9 +86,83 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
     def do_GET(self):
-        if self.path in ("/", "/health"):
-            self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
         clean_path = self.path.split("?", 1)[0]
+        if clean_path in ("/", "/app"):
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+            self.wfile.write(app_portal.get_web_app_html(BASE_URL).encode()); return
+        if clean_path == "/app/download":
+            self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+            self.wfile.write(app_portal.get_download_page_html(BASE_URL).encode()); return
+        if clean_path == "/manifest.json":
+            self.send_response(200); self.send_header("Content-Type", "application/manifest+json; charset=utf-8"); self.end_headers()
+            self.wfile.write(app_portal.get_manifest_json().encode()); return
+        if clean_path == "/sw.js":
+            self.send_response(200); self.send_header("Content-Type", "application/javascript; charset=utf-8"); self.end_headers()
+            self.wfile.write(app_portal.get_sw_js().encode()); return
+        if clean_path == "/health":
+            self.send_response(200); self.end_headers(); self.wfile.write(b"OK"); return
+        if clean_path.startswith("/api/"):
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            def qv(k, d=""): return qs.get(k, [d])[0]
+            api_cmd = clean_path.replace("/api/", "").strip("/")
+            self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
+            if api_cmd == "trending":
+                try:
+                    res = sites_scraper.search_custom_provider("ottstream", "Mirzapur") or sites_scraper.search_custom_provider("ottstream", "Stranger Things")
+                    self.wfile.write(json.dumps({"results": res[:20]}).encode())
+                except Exception as exc:
+                    self.wfile.write(json.dumps({"results": [], "error": str(exc)}).encode())
+                return
+            if api_cmd == "search":
+                q = qv("q")
+                prov = qv("prov", "ottstream")
+                try:
+                    if prov == "ottstream":
+                        res = sites_scraper.search_custom_provider("ottstream", q)
+                    elif prov in ("vegamovies", "katmovieshd", "rogmovies"):
+                        res = sites_scraper.search_custom_provider(prov, q)
+                    else:
+                        loop = asyncio.new_event_loop()
+                        data = loop.run_until_complete(run_bridge("search", prov, q))
+                        loop.close()
+                        res = data.get("results", [])
+                    filtered = filter_results(res, q)
+                    self.wfile.write(json.dumps({"results": filtered}).encode())
+                except Exception as exc:
+                    self.wfile.write(json.dumps({"results": [], "error": str(exc)}).encode())
+                return
+            if api_cmd == "details":
+                prov = qv("prov", "ottstream")
+                item_id = urllib.parse.unquote(qv("id"))
+                try:
+                    if prov in ("ottstream", "vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
+                        det = sites_scraper.get_custom_details(prov, item_id)
+                    else:
+                        loop = asyncio.new_event_loop()
+                        det = loop.run_until_complete(run_bridge("details", prov, item_id))
+                        loop.close()
+                    self.wfile.write(json.dumps(det).encode())
+                except Exception as exc:
+                    self.wfile.write(json.dumps({"error": str(exc)}).encode())
+                return
+            if api_cmd == "streams":
+                prov = qv("prov", "ottstream")
+                item_id = urllib.parse.unquote(qv("id"))
+                s = int(qv("s", "1"))
+                e = int(qv("e", "1"))
+                try:
+                    if prov == "ottstream":
+                        st = sites_scraper.get_ott_episode_streams(item_id, s, e)
+                    else:
+                        loop = asyncio.new_event_loop()
+                        st = loop.run_until_complete(run_bridge("streams", prov, item_id, str(s), str(e)))
+                        loop.close()
+                    self.wfile.write(json.dumps(st).encode())
+                except Exception as exc:
+                    self.wfile.write(json.dumps({"streams": [], "error": str(exc)}).encode())
+                return
+            self.wfile.write(b"{}"); return
+
         parts = clean_path.strip("/").split("/")
         sid = parts[1].split(".")[0] if len(parts) >= 2 else ""
         if len(parts) < 2 or sid not in STREAMS_CACHE:
@@ -100,6 +176,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
         surl = f"{BASE_URL}/s/{sid}{ext}"
         hdrs = {k: v for k, v in (info.get("headers") or []) if len((k, v)) == 2}
         if act == "vlc":
+            is_embed = any(k in u_low for k in ["embed", "vidsrc", "autoembed", "multiembed"])
+            if is_embed:
+                page = (
+                    f'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
+                    f'<title>{esc(info["title"])} - ST×LEO OTT</title>'
+                    f'<style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:#090d16;color:#f8fafc;font-family:system-ui,sans-serif;padding:12px;text-align:center}}'
+                    f'.card{{max-width:760px;margin:0 auto;background:#0f172a;border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:16px;box-shadow:0 20px 40px rgba(0,0,0,0.8)}}'
+                    f'.badge{{display:inline-block;background:rgba(229,9,20,.2);color:#fb7185;padding:4px 12px;border-radius:99px;font-size:12px;font-weight:700;margin-bottom:6px}}'
+                    f'.player{{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;margin:10px 0}}'
+                    f'.player iframe{{position:absolute;top:0;left:0;width:100%;height:100%;border:none}}'
+                    f'.btn{{display:block;width:100%;max-width:360px;margin:9px auto;padding:13px;border-radius:12px;text-decoration:none;font-weight:700;font-size:15px}}'
+                    f'.v{{background:#e50914;color:#fff}}.v2{{background:#1e293b;color:#38bdf8;border:1px solid #334155}}'
+                    f'.ft{{margin-top:14px;font-size:13px}}.ft a{{color:#fb7185;text-decoration:none;font-weight:600}}</style></head>'
+                    f'<body><div class="card">'
+                    f'<div class="badge">⚡ ST×LEO OTT LIVE • {esc(info["qual"])}</div>'
+                    f'<h2 style="margin:4px 0 8px">🎬 {esc(info["title"])}</h2>'
+                    f'<div class="player"><iframe src="{esc(info["url"])}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture"></iframe></div>'
+                    f'<a class="btn v" href="{esc(info["url"])}" target="_blank">▶️ Open Fullscreen in Browser</a>'
+                    f'<a class="btn v2" href="/app">📱 Back to ST×LEO App</a>'
+                    f'<div class="ft"><a href="https://t.me/Dara_OG">⚡ Developed by Devanshu (@Dara_OG)</a></div>'
+                    f'</div></body></html>'
+                )
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+                self.wfile.write(page.encode()); return
             itype = "application/dash+xml" if is_mpd else "video/*"
             ilink = f"intent://{HOST}/s/{sid}{ext}#Intent;scheme=https;package=org.videolan.vlc;type={itype};end"
             vlink = f"vlc://{HOST}/s/{sid}{ext}"
@@ -229,12 +329,38 @@ async def run_bridge(*args):
         logger.error("run_bridge failed: %s", exc)
         return {"error": str(exc)}
 
+async def app_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not allowed(uid): return
+    kb = [
+        [InlineKeyboardButton("📱 Open ST×LEO OTT Web App", url=f"{BASE_URL}/app")],
+        [InlineKeyboardButton("📲 Download Android App (.apk)", url=f"{BASE_URL}/app/download")],
+        [InlineKeyboardButton("💬 Join Telegram (@Dara_OG)", url="https://t.me/Dara_OG")]
+    ]
+    await update.message.reply_text(
+        f"🌟 <b>ST×LEO OTT (Android & Web App)</b>\n\n"
+        f"👑 <b>Developer:</b> Devanshu (<code>@Dara_OG</code>)\n\n"
+        f"⚡ <b>Features:</b>\n"
+        f"• Stream Netflix, Prime Video, Hotstar & Latest Movies\n"
+        f"• Watch live without downloading\n"
+        f"• 1080p / 4K Player with VLC & External Player support\n"
+        f"• 1-Click Fast Direct Cloud Downloads\n\n"
+        f"<i>Tap below to open or install:</i>{FOOTER}",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="HTML"
+    )
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Open ST×LEO OTT App", url=f"{BASE_URL}/app")],
+        [InlineKeyboardButton("📲 Download Android APK", url=f"{BASE_URL}/app/download")],
+        [InlineKeyboardButton("💬 Channel (@Dara_OG)", url="https://t.me/Dara_OG")]
+    ])
     if uid == ADMIN_ID:
-        await update.message.reply_text(f"👑 <b>Admin Mode Ready</b>\n• Send movie/series name\n• <code>/trending</code> | <code>/fav</code> | <code>/history</code>\n\n<b>Admin:</b>\n• <code>/allow &lt;id&gt;</code>\n• <code>/remove &lt;id&gt;</code>\n• <code>/users</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
+        await update.message.reply_text(f"👑 <b>Admin Mode Ready</b>\n• Send movie/series name\n• <code>/app</code> | <code>/trending</code> | <code>/fav</code> | <code>/history</code>\n\n<b>Admin:</b>\n• <code>/allow &lt;id&gt;</code>\n• <code>/remove &lt;id&gt;</code>\n• <code>/users</code>{FOOTER}", reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     elif allowed(uid):
-        await update.message.reply_text(f"🎬 <b>ST×LEO FINAL BOSS Bot</b>\n• Send any movie/series name\n• <code>/trending</code> | <code>/fav</code> | <code>/history</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
+        await update.message.reply_text(f"🎬 <b>ST×LEO FINAL BOSS Bot</b>\n• Send any movie/series name\n• <code>/app</code> | <code>/trending</code> | <code>/fav</code> | <code>/history</code>{FOOTER}", reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
     else:
         await update.message.reply_text(f"🔒 <b>Access Denied</b>\nSend ID to Admin: <code>{uid}</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
 
@@ -284,10 +410,13 @@ def results_kb(results, prov=None):
         kb.append([InlineKeyboardButton(f"{tp} {item['title']}{yr}"[:60], callback_data=f"m:{i}")])
     return InlineKeyboardMarkup(kb)
 
-async def do_search(msg_obj, uid, query, prov="moviebox", edit=False):
+async def do_search(msg_obj, uid, query, prov="ottstream", edit=False):
     try:
         SESSIONS[uid] = {"query": query, "prov": prov}
-        if prov in ("vegamovies", "katmovieshd", "rogmovies"):
+        if prov == "ottstream":
+            custom_results = await asyncio.to_thread(sites_scraper.search_custom_provider, "ottstream", query)
+            data = {"results": custom_results}
+        elif prov in ("vegamovies", "katmovieshd", "rogmovies"):
             custom_results = await asyncio.to_thread(sites_scraper.search_custom_provider, prov, query)
             data = {"results": custom_results}
         elif prov == "fourkhdhub":
@@ -433,7 +562,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("m:"):
             item = sess["results"][int(data.split(":")[1])]; sess["item"] = item
             await safe_edit(q, f"⏳ Loading <b>{esc(item['title'])}</b>...{FOOTER}")
-            if item.get("provider") in ("vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
+            if item.get("provider") in ("ottstream", "vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
                 d = await asyncio.to_thread(sites_scraper.get_custom_details, item["provider"], item["id"])
             else:
                 d = await run_bridge("details", item["provider"], item["id"])
@@ -455,7 +584,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("dub:"):
             dub = sess["dubs"][int(data.split(":")[1])]
             await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
-            if sess["item"].get("provider") in ("vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
+            if sess["item"].get("provider") in ("ottstream", "vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
                 d = dict(sess.get("details_raw", {}))
                 d["streams"] = dedupe_streams(dub.get("streams", []))
             else:
@@ -475,8 +604,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             e_idx = int(data.split(":")[1]); sess["e_idx"] = e_idx
             ep = sess["season"]["episodes"][e_idx]; item = sess["item"]
             await safe_edit(q, f"⏳ Fetching <b>S{ep['season']:02d}E{ep['number']:02d}</b>...{FOOTER}")
-            res = await run_bridge("streams", item["provider"], item["id"], str(ep["season"]), str(ep["number"]))
-            streams = res.get("streams", [])
+            if item.get("provider") == "ottstream":
+                res = await asyncio.to_thread(sites_scraper.get_ott_episode_streams, item["id"], ep["season"], ep["number"])
+                streams = res.get("streams", [])
+            else:
+                res = await run_bridge("streams", item["provider"], item["id"], str(ep["season"]), str(ep["number"]))
+                streams = res.get("streams", [])
             prov = item.get("provider") or sess.get("prov")
             s2_errors = []
             if prov == "fourkhdhub" and streams:
@@ -504,14 +637,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning("direct resolution failed: %s", exc)
 
             STREAMS_CACHE[sid] = {"url": direct_url, "raw_url": raw_url, "headers": st.get("headers"), "codec": st.get("codec"), "title": title, "qual": qual, "safe": safe, "rating": d.get("rating"), "captions": sess.get("captions", [])}
-            kb = [
-                [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
-                [InlineKeyboardButton("⬇️ 1-Click Direct Download", url=f"{BASE_URL}/dl/{sid}")],
-            ]
-            if direct_url != raw_url and str(direct_url).startswith("http"):
-                kb.append([InlineKeyboardButton("🚀 Direct High-Speed Link", url=direct_url)])
-            elif any(k in raw_url.lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile"]):
-                kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=raw_url)])
+            is_embed = any(k in str(direct_url).lower() for k in ["embed", "vidsrc", "autoembed", "multiembed"])
+            if is_embed:
+                kb = [
+                    [InlineKeyboardButton("▶️ Watch Live (Ad-Free Cinema)", url=f"{BASE_URL}/vlc/{sid}")],
+                    [InlineKeyboardButton("📱 Open in ST×LEO OTT App", url=f"{BASE_URL}/app")],
+                    [InlineKeyboardButton("🌐 Direct Embed Stream", url=direct_url)],
+                ]
+            else:
+                kb = [
+                    [InlineKeyboardButton("▶️ Watch / Open in VLC", url=f"{BASE_URL}/vlc/{sid}")],
+                    [InlineKeyboardButton("⬇️ 1-Click Direct Download", url=f"{BASE_URL}/dl/{sid}")],
+                ]
+                if direct_url != raw_url and str(direct_url).startswith("http"):
+                    kb.append([InlineKeyboardButton("🚀 Direct High-Speed Link", url=direct_url)])
+                elif any(k in raw_url.lower() for k in ["vcloud", "hubcloud", "hubdrive", "fastdl", "gofile", "megaup", "filebee", "vikingfile"]):
+                    kb.append([InlineKeyboardButton("⚡ Fast Cloud Link", url=raw_url)])
             if sess.get("season") and sess.get("e_idx", -1) + 1 < len(sess["season"]["episodes"]):
                 kb.append([InlineKeyboardButton("⏭ Next Episode", callback_data=f"e:{sess['e_idx']+1}")])
             kb.append([InlineKeyboardButton("🔗 Copy URL", callback_data=f"url:{idx}"), InlineKeyboardButton("⬅️ Back", callback_data="back:q")])
@@ -539,6 +680,7 @@ if __name__ == "__main__":
     threading.Thread(target=start_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("app", app_cmd))
     app.add_handler(CommandHandler("trending", trending_cmd))
     app.add_handler(CommandHandler("fav", fav_cmd))
     app.add_handler(CommandHandler("history", hist_cmd))

@@ -138,6 +138,8 @@ def search_wordpress(provider_key: str, domain: str, query: str) -> list:
     return results
 
 def search_custom_provider(prov: str, query: str) -> list:
+    if prov == "ottstream":
+        return search_ott_stream(query)
     domain = get_domain(prov)
     if not domain:
         return []
@@ -174,6 +176,8 @@ def simplify_language(raw_lang: str) -> str:
     return "Hindi + English (Dual Audio)"
 
 def get_custom_details(prov: str, post_url: str) -> dict:
+    if prov == "ottstream":
+        return get_ott_details(post_url)
     html = fetch_html(post_url)
     if not html:
         return {"error": "Failed to load page content."}
@@ -382,3 +386,144 @@ def resolve_direct_stream(url: str) -> str:
             return re_m.group(1)
 
     return u
+
+def search_ott_stream(query: str) -> list:
+    query = (query or "").strip()
+    if not query:
+        return []
+    results = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for kind in ["movie", "series"]:
+        url = f"https://v3-cinemeta.strem.io/catalog/{kind}/top/search={urllib.parse.quote(query)}.json"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read())
+                for m in data.get("metas", []):
+                    title = m.get("name") or ""
+                    if not title:
+                        continue
+                    is_series = (m.get("type") == "series" or kind == "series")
+                    results.append({
+                        "id": f"ott_{m['id']}_{'series' if is_series else 'movie'}",
+                        "title": title,
+                        "year": str(m.get("year", "") or ""),
+                        "type": "TV Series" if is_series else "Movie",
+                        "provider": "ottstream",
+                        "poster": m.get("poster") or f"https://images.metahub.space/poster/small/{m['id']}/img"
+                    })
+        except Exception as e:
+            logger.warning("search_ott_stream error for %s: %s", kind, e)
+
+    q_low = query.lower()
+    def score_item(it):
+        t_low = it["title"].lower()
+        score = 0
+        if t_low == q_low:
+            score += 200
+        elif t_low.startswith(q_low):
+            score += 100
+        elif q_low in t_low:
+            score += 50
+        if it.get("year"):
+            score += 10
+        return score
+
+    results.sort(key=score_item, reverse=True)
+    return results
+
+def get_ott_details(item_id: str) -> dict:
+    parts = item_id.split("_")
+    imdb_id = parts[1] if len(parts) >= 2 else item_id
+    kind = parts[2] if len(parts) >= 3 else ("series" if "series" in item_id else "movie")
+    url = f"https://v3-cinemeta.strem.io/meta/{kind}/{imdb_id}.json"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        meta = data.get("meta", {})
+    except Exception as exc:
+        logger.warning("get_ott_details error: %s", exc)
+        meta = {"name": imdb_id, "id": imdb_id}
+
+    title = meta.get("name") or "OTT Stream"
+    poster = meta.get("poster") or f"https://images.metahub.space/poster/small/{imdb_id}/img"
+    plot = meta.get("description") or meta.get("overview") or ""
+    rating = meta.get("imdbRating") or meta.get("rating")
+    duration = meta.get("runtime") or ""
+    year = meta.get("year") or ""
+
+    if kind == "series" or meta.get("type") == "series" or meta.get("videos"):
+        seasons_dict = {}
+        for v in meta.get("videos", []):
+            s_num = int(v.get("season", 1))
+            if s_num == 0:
+                continue
+            e_num = int(v.get("number", v.get("episode", 1)))
+            seasons_dict.setdefault(s_num, []).append({
+                "number": e_num,
+                "season": s_num,
+                "title": v.get("name") or f"Episode {e_num}",
+                "overview": v.get("overview", "")
+            })
+        if not seasons_dict:
+            for v in meta.get("videos", []):
+                s_num = int(v.get("season", 0))
+                e_num = int(v.get("number", v.get("episode", 1)))
+                seasons_dict.setdefault(s_num, []).append({
+                    "number": e_num,
+                    "season": s_num,
+                    "title": v.get("name") or f"Episode {e_num}",
+                    "overview": v.get("overview", "")
+                })
+        seasons = []
+        for s_num in sorted(seasons_dict.keys()):
+            eps = sorted(seasons_dict[s_num], key=lambda x: x["number"])
+            seasons.append({"number": s_num, "episodes": eps})
+        return {
+            "title": title,
+            "year": year,
+            "rating": rating,
+            "duration": duration,
+            "plot": plot,
+            "poster": poster,
+            "type": "TV Series",
+            "provider": "ottstream",
+            "seasons": seasons,
+            "streams": [],
+            "captions": [],
+        }
+
+    streams = [
+        {"quality": "1080p", "resolution": 1080, "size_str": "Auto HLS", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://player.autoembed.cc/embed/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Super Cloud", "language": "English / Dual", "url": f"https://multiembed.mov/?video_id={imdb_id}", "format": "hls"},
+        {"quality": "720p", "resolution": 720, "size_str": "VidSrc Fast", "language": "Multi-Sub", "url": f"https://vidsrc.xyz/embed/movie?imdb={imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "EmbedSu Mirror", "language": "Multi", "url": f"https://embed.su/embed/movie/{imdb_id}", "format": "hls"},
+        {"quality": "720p", "resolution": 720, "size_str": "2Embed Backup", "language": "Original", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
+    ]
+    return {
+        "title": title,
+        "year": year,
+        "rating": rating,
+        "duration": duration,
+        "plot": plot,
+        "poster": poster,
+        "type": "Movie",
+        "provider": "ottstream",
+        "streams": streams,
+        "dubs": [],
+        "seasons": [],
+        "captions": [],
+    }
+
+def get_ott_episode_streams(item_id: str, season: int, episode: int) -> dict:
+    parts = item_id.split("_")
+    imdb_id = parts[1] if len(parts) >= 2 else item_id
+    streams = [
+        {"quality": "1080p", "resolution": 1080, "size_str": "Auto HLS", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://player.autoembed.cc/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Super Cloud", "language": "English / Dual", "url": f"https://multiembed.mov/?video_id={imdb_id}&s={season}&e={episode}", "format": "hls"},
+        {"quality": "720p", "resolution": 720, "size_str": "VidSrc Fast", "language": "Multi-Sub", "url": f"https://vidsrc.xyz/embed/tv?imdb={imdb_id}&season={season}&episode={episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "EmbedSu Mirror", "language": "Multi", "url": f"https://embed.su/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+    ]
+    return {"streams": streams, "captions": []}
