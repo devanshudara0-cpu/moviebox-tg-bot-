@@ -461,24 +461,87 @@ def get_web_app_html(base_url: str):
         .modal-body {{
             padding: 16px;
         }}
-        .stream-btn {{
-            display: block;
-            width: 100%;
-            background: #1e293b;
-            color: #f8fafc;
-            border: 1px solid #334155;
-            padding: 12px;
-            border-radius: 12px;
-            font-size: 14px;
+        .stream-card {{
+            background: #182234;
+            border: 1px solid #293850;
+            border-radius: 14px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }}
+        .stream-meta {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }}
+        .badge-4k {{
+            background: linear-gradient(135deg, #e11d48, #9333ea);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 800;
+            padding: 3px 8px;
+            border-radius: 6px;
+            letter-spacing: 0.5px;
+            box-shadow: 0 0 10px rgba(225, 29, 72, 0.4);
+        }}
+        .badge-1080 {{
+            background: linear-gradient(135deg, #2563eb, #06b6d4);
+            color: #fff;
+            font-size: 11px;
             font-weight: 700;
-            text-align: left;
-            margin-bottom: 8px;
+            padding: 3px 8px;
+            border-radius: 6px;
+        }}
+        .badge-720 {{
+            background: #334155;
+            color: #94a3b8;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 6px;
+        }}
+        .stream-actions {{
+            display: flex;
+            gap: 8px;
+        }}
+        .btn-play-stream {{
+            background: #e50914;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 700;
             cursor: pointer;
             transition: all 0.2s ease;
         }}
-        .stream-btn:hover {{
-            background: #e50914;
-            border-color: #e50914;
+        .btn-play-stream:hover {{
+            background: #f43f5e;
+            transform: scale(1.02);
+        }}
+        .btn-dl-stream {{
+            background: #0ea5e9;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.2s ease;
+        }}
+        .btn-dl-stream:hover {{
+            background: #38bdf8;
+            transform: scale(1.02);
         }}
         .vlc-btn {{
             display: block;
@@ -778,11 +841,37 @@ def get_web_app_html(base_url: str):
 
         function renderStreams(streams) {{
             const list = document.getElementById('streams-list');
-            list.innerHTML = streams.map(st => `
-                <button class="stream-btn" onclick="playStream('${{st.url}}', '${{activeDetails.title}}')">
-                    ▶️ ${{st.quality || '1080p'}} • ${{st.language || 'Multi'}} • ${{st.size_str || 'Fast'}}
-                </button>
-            `).join('');
+            if (!streams || streams.length === 0) {{
+                list.innerHTML = '<div style="color:#94a3b8;padding:12px;text-align:center">No streams found on this server. Try another server above.</div>';
+                return;
+            }}
+            list.innerHTML = streams.map((st, idx) => {{
+                const q = String(st.quality || st.size_str || '').toLowerCase();
+                const res = parseInt(st.resolution || 0);
+                const is4K = q.includes('4k') || q.includes('2160') || res >= 2160;
+                const is1080 = q.includes('1080') || res >= 1080;
+                const is720 = q.includes('720') || res >= 720;
+                const badgeClass = is4K ? 'badge-4k' : (is1080 ? 'badge-1080' : 'badge-720');
+                const badgeText = is4K ? '🔥 4K Ultra HD (2160p)' : (is1080 ? '✨ 1080p Full HD' : (is720 ? '⚡ 720p HD' : '📱 480p SD'));
+                const sizeText = st.size ? `<span style="font-size:12px;color:#94a3b8">💾 ${{st.size}}</span>` : '';
+                const langText = st.language ? `<span style="font-size:11px;color:#cbd5e1">🌐 ${{st.language}}</span>` : '';
+                const titleSafe = (activeDetails ? activeDetails.title : 'Movie').replace(/['"<>&]/g, ' ');
+                const qTag = is4K ? '4K' : (is1080 ? '1080p' : (is720 ? '720p' : '480p'));
+                const dlUrl = `/download?u=${{encodeURIComponent(st.url)}}&title=${{encodeURIComponent(titleSafe + '_' + qTag)}}`;
+                return `
+                <div class="stream-card">
+                    <div class="stream-meta">
+                        <span class="${{badgeClass}}">${{badgeText}}</span>
+                        ${{sizeText}}
+                        ${{langText}}
+                    </div>
+                    <div class="stream-actions">
+                        <button class="btn-play-stream" onclick="playStream('${{st.url}}', '${{titleSafe}}')">▶️ Play Video</button>
+                        <a class="btn-dl-stream" href="${{dlUrl}}" download>⬇️ Download (${{qTag}})</a>
+                    </div>
+                </div>
+                `;
+            }}).join('');
         }}
 
         function playStream(url, title) {{
@@ -790,29 +879,29 @@ def get_web_app_html(base_url: str):
             const vlcBtn = document.getElementById('vlc-action');
             if (!url) return;
 
-            const isEmbed = url.includes('embed') || url.includes('vidsrc') || url.includes('autoembed') || url.includes('multiembed') || url.includes('vidlink') || url.includes('2embed');
+            const isEmbed = url.includes('embed') || url.includes('vidsrc') || url.includes('autoembed') || url.includes('multiembed') || url.includes('2embed');
 
             if (isEmbed) {{
                 p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe>`;
                 vlcBtn.style.display = 'block';
-                vlcBtn.href = url;
-                vlcBtn.innerText = '🌐 Open Stream in Fullscreen Browser';
+                vlcBtn.href = `/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}`;
+                vlcBtn.innerHTML = '⬇️ Direct Download Video to Phone';
             }} else if (url.includes('.mp4') || url.includes('.m3u8') || url.includes('.mpd')) {{
                 p.innerHTML = `<video controls autoplay playsinline src="${{url}}"></video>`;
                 vlcBtn.style.display = 'block';
-                vlcBtn.href = `intent://${{window.location.host}}/play?u=${{encodeURIComponent(url)}}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end`;
-                vlcBtn.innerText = '▶️ Open in VLC Player';
+                vlcBtn.href = `/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}`;
+                vlcBtn.innerHTML = '⬇️ Direct Download Video to Phone';
             }} else {{
                 p.innerHTML = `
                     <div style="padding: 40px 20px; text-align: center; color: #f8fafc;">
-                        <h3 style="margin-bottom: 12px; color: #fb7185;">⚡ Cloud Stream / Download Ready</h3>
-                        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">Tap below to start streaming or download directly:</p>
-                        <a href="${{url}}" target="_blank" style="display: inline-block; background: #e50914; color: #fff; padding: 12px 24px; border-radius: 99px; text-decoration: none; font-weight: 700;">🚀 Open Direct Link</a>
+                        <h3 style="margin-bottom: 12px; color: #fb7185;">⚡ Video Stream / Direct Download Ready</h3>
+                        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">Tap below to start high-speed direct download:</p>
+                        <a href="/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}" download style="display: inline-block; background: #0ea5e9; color: #fff; padding: 12px 28px; border-radius: 99px; text-decoration: none; font-weight: 700; font-size: 15px;">⬇️ Start Direct Download</a>
                     </div>
                 `;
                 vlcBtn.style.display = 'block';
-                vlcBtn.href = url;
-                vlcBtn.innerText = '🚀 Open Direct Link in Browser / Player';
+                vlcBtn.href = `/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}`;
+                vlcBtn.innerHTML = '⬇️ Direct Download Video to Phone';
             }}
         }}
 

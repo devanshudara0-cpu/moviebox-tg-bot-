@@ -107,6 +107,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
                 return
             self.send_response(404); self.end_headers(); return
+        if clean_path == "/download":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            target = qs.get("u", [""])[0]
+            title = qs.get("title", ["Movie"])[0]
+            if target:
+                resolved = sites_scraper.resolve_direct_stream(target)
+                self.send_response(302)
+                self.send_header("Location", resolved)
+                self.send_header("Content-Disposition", f'attachment; filename="{title}.mp4"')
+                self.end_headers()
+                return
+            self.send_response(400); self.end_headers(); return
         if clean_path in ("/logo.png", "/icon.png", "/favicon.ico"):
             logo_path = os.path.abspath("app_logo.png")
             if not os.path.exists(logo_path):
@@ -134,6 +146,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             def qv(k, d=""): return qs.get(k, [d])[0]
             api_cmd = clean_path.replace("/api/", "").strip("/")
             self.send_response(200); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
+            if api_cmd == "resolve":
+                raw_u = qv("url")
+                resolved = sites_scraper.resolve_direct_stream(raw_u)
+                self.wfile.write(json.dumps({"url": resolved}).encode())
+                return
             if api_cmd == "trending":
                 try:
                     res = sites_scraper.search_custom_provider("ottstream", "Mirzapur") or sites_scraper.search_custom_provider("ottstream", "Stranger Things")
