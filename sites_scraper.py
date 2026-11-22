@@ -440,7 +440,8 @@ def search_ott_stream(query: str) -> list:
                         "year": str(m.get("year", "") or ""),
                         "type": "TV Series" if is_series else "Movie",
                         "provider": "ottstream",
-                        "poster": m.get("poster") or f"https://images.metahub.space/poster/small/{m['id']}/img"
+                        "poster": m.get("poster") or f"https://images.metahub.space/poster/small/{m['id']}/img",
+                        "background": m.get("background") or f"https://images.metahub.space/background/medium/{m['id']}/img"
                     })
         except Exception as e:
             logger.warning("search_ott_stream error for %s: %s", kind, e)
@@ -526,10 +527,9 @@ def get_ott_details(item_id: str) -> dict:
         }
 
     streams = [
-        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 1 (1080p Ultra HD)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidlink.pro/movie/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 2 (Fast HD)", "language": "Multi-Sub", "url": f"https://vidsrc.cc/v2/embed/movie/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 3 (Cloud Server)", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
-        {"quality": "720p", "resolution": 720, "size_str": "Stream 4 (Backup Server)", "language": "Multi", "url": f"https://autoembed.co/movie/imdb/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 1 (Ultra HD Fast)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidsrc.su/embed/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 2 (Cloud Player)", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 3 (Backup HD)", "language": "Multi", "url": f"https://autoembed.to/movie/imdb/{imdb_id}", "format": "hls"},
     ]
     return {
         "title": title,
@@ -550,9 +550,8 @@ def get_ott_episode_streams(item_id: str, season: int, episode: int) -> dict:
     parts = item_id.split("_")
     imdb_id = parts[1] if len(parts) >= 2 else item_id
     streams = [
-        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 1 (1080p Ultra HD)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidlink.pro/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 2 (Fast HD)", "language": "Multi-Sub", "url": f"https://vidsrc.cc/v2/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 3 (Cloud Server)", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
-        {"quality": "720p", "resolution": 720, "size_str": "Stream 4 (Backup Server)", "language": "Multi-Sub", "url": f"https://autoembed.co/tv/imdb/{imdb_id}-{season}-{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 1 (Ultra HD Fast)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidsrc.su/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 2 (Cloud Player)", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 3 (Backup HD)", "language": "Multi-Sub", "url": f"https://autoembed.to/tv/imdb/{imdb_id}-{season}-{episode}", "format": "hls"},
     ]
     return {"streams": streams, "captions": []}

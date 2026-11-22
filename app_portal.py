@@ -656,26 +656,15 @@ def get_web_app_html(base_url: str):
             }}
         }}
 
-        function getFallbackPoster(title, year) {{
-            const cleanTitle = (title || 'ST×LEO OTT').replace(/['"<>&]/g, ' ').trim().slice(0, 30);
-            const yr = year || 'HD';
-            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450">
-                <defs>
-                    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" stop-color="#0b0f19"/>
-                        <stop offset="60%" stop-color="#18182b"/>
-                        <stop offset="100%" stop-color="#831843"/>
-                    </linearGradient>
-                </defs>
-                <rect width="100%" height="100%" fill="url(#bg)"/>
-                <circle cx="150" cy="180" r="48" fill="rgba(229,9,20,0.25)" stroke="#e50914" stroke-width="3"/>
-                <polygon points="142,160 142,200 172,180" fill="#ffffff"/>
-                <rect x="20" y="20" width="70" height="24" rx="6" fill="#e50914"/>
-                <text x="55" y="36" fill="#fff" font-size="11" font-weight="bold" font-family="sans-serif" text-anchor="middle">${{yr}}</text>
-                <text x="150" y="280" fill="#ffffff" font-size="16" font-weight="bold" font-family="sans-serif" text-anchor="middle">${{cleanTitle}}</text>
-                <text x="150" y="310" fill="#fb7185" font-size="12" font-weight="600" font-family="sans-serif" text-anchor="middle">ST×LEO OTT</text>
-            </svg>`;
-            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        function onPosterError(img, bgUrl) {{
+            if (bgUrl && bgUrl.startsWith('http') && img.src !== bgUrl) {{
+                img.src = bgUrl;
+                return;
+            }}
+            const card = img.closest('.card');
+            if (card) {{
+                card.remove();
+            }}
         }}
 
         function renderCards(items) {{
@@ -687,14 +676,15 @@ def get_web_app_html(base_url: str):
                 let poster = it.poster;
                 if (!poster || !poster.startsWith('http') || poster.includes('flaticon') || poster.includes('placeholder')) {{
                     const m = String(it.id || '').match(/tt\\d+/);
-                    poster = m ? `https://images.metahub.space/poster/small/${{m[0]}}/img` : getFallbackPoster(it.title, it.year);
+                    poster = m ? `https://images.metahub.space/poster/small/${{m[0]}}/img` : (it.background || '');
                 }}
+                if (!poster) return '';
                 const yr = it.year ? it.year : '';
                 const tp = it.type ? it.type : 'Movie';
-                const safeTitle = (it.title || '').replace(/'/g, "\\\\'");
+                const bg = (it.background || '').replace(/'/g, "\\\\'");
                 return `
                 <div class="card" onclick="openDetails('${{it.provider || currentProv}}', '${{encodeURIComponent(it.id)}}')">
-                    <img class="poster" src="${{poster}}" alt="${{it.title}}" loading="lazy" onerror="this.onerror=null;this.src=getFallbackPoster('${{safeTitle}}', '${{it.year||''}}');">
+                    <img class="poster" src="${{poster}}" alt="${{it.title}}" loading="lazy" onerror="onPosterError(this, '${{bg}}')">
                     <div class="card-info">
                         <div class="card-title">${{it.title}}</div>
                         <div class="card-meta">
