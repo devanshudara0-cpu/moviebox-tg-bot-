@@ -12,7 +12,7 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 ADMIN_ID = 7641123461
 DB, FAV_DB, HIST_DB = "users.json", "favs.json", "history.json"
 BRIDGE = os.path.abspath("tg_bridge")
-BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://moviebox-tg-bot.onrender.com").rstrip("/")
+BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://leo-final-boss.onrender.com").rstrip("/")
 HOST = BASE_URL.replace("https://", "").replace("http://", "")
 FOOTER = '\n\n⚡ <i>Made by <a href="https://t.me/Dara_OG">@Dara_OG</a></i>'
 PROVIDERS = [
@@ -202,7 +202,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid == ADMIN_ID:
         await update.message.reply_text(f"👑 <b>Admin Mode Ready</b>\n• Send movie/series name\n• <code>/trending</code> | <code>/fav</code> | <code>/history</code>\n\n<b>Admin:</b>\n• <code>/allow &lt;id&gt;</code>\n• <code>/remove &lt;id&gt;</code>\n• <code>/users</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
     elif allowed(uid):
-        await update.message.reply_text(f"🎬 <b>MovieBox Pro Bot</b>\n• Send any movie/series name\n• <code>/trending</code> | <code>/fav</code> | <code>/history</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
+        await update.message.reply_text(f"🎬 <b>ST×LEO FINAL BOSS Bot</b>\n• Send any movie/series name\n• <code>/trending</code> | <code>/fav</code> | <code>/history</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
     else:
         await update.message.reply_text(f"🔒 <b>Access Denied</b>\nSend ID to Admin: <code>{uid}</code>{FOOTER}", parse_mode="HTML", disable_web_page_preview=True)
 
