@@ -111,14 +111,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             target = qs.get("u", [""])[0]
             title = qs.get("title", ["Movie"])[0]
-            if target:
-                resolved = sites_scraper.resolve_direct_stream(target)
-                self.send_response(302)
-                self.send_header("Location", resolved)
-                self.send_header("Content-Disposition", f'attachment; filename="{title}.mp4"')
-                self.end_headers()
-                return
-            self.send_response(400); self.end_headers(); return
+            if not target:
+                self.send_response(400); self.end_headers(); return
+            target_low = target.lower()
+            if any(k in target_low for k in ("embed", "vidsrc", "autoembed", "2embed", "vidlink")):
+                page = f'''<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ST×LEO OTT - Live Stream</title>
+<style>body{{background:#090d16;color:#f8fafc;font-family:-apple-system,sans-serif;text-align:center;padding:30px 16px;margin:0}}
+.box{{max-width:440px;margin:20px auto;background:#0f172a;border-radius:18px;padding:24px;border:1px solid rgba(255,255,255,0.1)}}
+h2{{color:#fb7185;margin-bottom:12px;font-size:20px}}p{{color:#94a3b8;font-size:14px;line-height:1.6;margin-bottom:20px}}
+.btn{{display:block;width:100%;box-sizing:border-box;padding:12px;border-radius:12px;font-weight:700;font-size:14px;text-decoration:none;margin-bottom:10px}}
+.b-red{{background:#e50914;color:#fff}}.b-blue{{background:#0ea5e9;color:#fff}}</style></head>
+<body><div class="box"><h2>⚡ Server 1 is for Live Streaming</h2>
+<p>Server 1 live player stream hai jo seedha app ke andar play hota hai.<br><br>
+Agar aapko <b>4K / 1080p Video File direct phone me Download</b> karni hai, toh app me <b>Server 2 (Moviebox) ya Server 4 (Vegamovies)</b> select karein!</p>
+<a class="btn b-red" href="/app">📱 Back to ST×LEO OTT App</a>
+<a class="btn b-blue" href="{target}">▶️ Open Stream Player</a>
+</div></body></html>'''
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
+                self.wfile.write(page.encode()); return
+
+            resolved = sites_scraper.resolve_direct_stream(target)
+            safe_title = re.sub(r'[^a-zA-Z0-9_\-\. ]', '_', title).strip() or "video"
+            if not safe_title.endswith(".mp4") and not safe_title.endswith(".mkv"):
+                safe_title += ".mp4"
+            self.send_response(302)
+            self.send_header("Location", resolved)
+            self.send_header("Content-Disposition", f'attachment; filename="{safe_title}"')
+            self.end_headers()
+            return
         if clean_path in ("/logo.png", "/icon.png", "/favicon.ico"):
             logo_path = os.path.abspath("app_logo.png")
             if not os.path.exists(logo_path):

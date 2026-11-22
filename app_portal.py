@@ -845,7 +845,16 @@ def get_web_app_html(base_url: str):
                 list.innerHTML = '<div style="color:#94a3b8;padding:12px;text-align:center">No streams found on this server. Try another server above.</div>';
                 return;
             }}
-            list.innerHTML = streams.map((st, idx) => {{
+            const isOtt = (activeDetails && activeDetails.prov === 'ottstream');
+            let banner = '';
+            if (isOtt) {{
+                banner = `
+                <div style="background:rgba(229,9,20,0.12);border:1px solid rgba(229,9,20,0.3);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#fb7185;line-height:1.5">
+                    💡 <b>Live OTT Streaming Mode:</b> Server 1 online streaming ke liye hai bina kisi download ke. Agar <b>4K / 1080p Video File direct phone me Download</b> karni hai, toh upar <b>Server 2 (Moviebox) ya Server 4 (Vegamovies)</b> chunein!
+                </div>
+                `;
+            }}
+            const cards = streams.map((st, idx) => {{
                 const q = String(st.quality || st.size_str || '').toLowerCase();
                 const res = parseInt(st.resolution || 0);
                 const is4K = q.includes('4k') || q.includes('2160') || res >= 2160;
@@ -858,6 +867,14 @@ def get_web_app_html(base_url: str):
                 const titleSafe = (activeDetails ? activeDetails.title : 'Movie').replace(/['"<>&]/g, ' ');
                 const qTag = is4K ? '4K' : (is1080 ? '1080p' : (is720 ? '720p' : '480p'));
                 const dlUrl = `/download?u=${{encodeURIComponent(st.url)}}&title=${{encodeURIComponent(titleSafe + '_' + qTag)}}`;
+
+                const actionHtml = isOtt ? `
+                    <button class="btn-play-stream" onclick="playStream('${{st.url}}', '${{titleSafe}}')">▶️ Play Stream ${{idx + 1}}</button>
+                ` : `
+                    <button class="btn-play-stream" onclick="playStream('${{st.url}}', '${{titleSafe}}')">▶️ Play in App</button>
+                    <a class="btn-dl-stream" href="${{dlUrl}}" download>⬇️ Download (${{qTag}})</a>
+                `;
+
                 return `
                 <div class="stream-card">
                     <div class="stream-meta">
@@ -866,12 +883,13 @@ def get_web_app_html(base_url: str):
                         ${{langText}}
                     </div>
                     <div class="stream-actions">
-                        <button class="btn-play-stream" onclick="playStream('${{st.url}}', '${{titleSafe}}')">▶️ Play Video</button>
-                        <a class="btn-dl-stream" href="${{dlUrl}}" download>⬇️ Download (${{qTag}})</a>
+                        ${{actionHtml}}
                     </div>
                 </div>
                 `;
             }}).join('');
+
+            list.innerHTML = banner + cards;
         }}
 
         function playStream(url, title) {{
@@ -882,26 +900,26 @@ def get_web_app_html(base_url: str):
             const isEmbed = url.includes('embed') || url.includes('vidsrc') || url.includes('autoembed') || url.includes('multiembed') || url.includes('2embed');
 
             if (isEmbed) {{
-                p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe>`;
-                vlcBtn.style.display = 'block';
-                vlcBtn.href = `/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}`;
-                vlcBtn.innerHTML = '⬇️ Direct Download Video to Phone';
+                p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen" referrerpolicy="no-referrer"></iframe>`;
+                vlcBtn.style.display = 'none';
             }} else if (url.includes('.mp4') || url.includes('.m3u8') || url.includes('.mpd')) {{
                 p.innerHTML = `<video controls autoplay playsinline src="${{url}}"></video>`;
                 vlcBtn.style.display = 'block';
                 vlcBtn.href = `/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}`;
-                vlcBtn.innerHTML = '⬇️ Direct Download Video to Phone';
+                vlcBtn.innerHTML = '⬇️ Direct Download Video File (.mp4)';
             }} else {{
                 p.innerHTML = `
-                    <div style="padding: 40px 20px; text-align: center; color: #f8fafc;">
-                        <h3 style="margin-bottom: 12px; color: #fb7185;">⚡ Video Stream / Direct Download Ready</h3>
-                        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">Tap below to start high-speed direct download:</p>
-                        <a href="/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}" download style="display: inline-block; background: #0ea5e9; color: #fff; padding: 12px 28px; border-radius: 99px; text-decoration: none; font-weight: 700; font-size: 15px;">⬇️ Start Direct Download</a>
+                    <div style="padding: 28px 16px; text-align: center; color: #f8fafc; background: rgba(15,23,42,0.85); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+                        <div style="font-size: 32px; margin-bottom: 8px;">🎬</div>
+                        <h3 style="margin-bottom: 8px; color: #fb7185; font-size: 16px;">${{title}}</h3>
+                        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 18px;">Direct High-Speed 4K / 1080p Cloud Stream & Download Ready</p>
+                        <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+                            <a href="/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}" download class="btn-dl-stream" style="padding: 10px 22px; font-size: 14px; border-radius: 99px;">⬇️ Download to Phone</a>
+                            <a href="intent://${{window.location.host}}/download?u=${{encodeURIComponent(url)}}#Intent;type=video/*;package=org.videolan.vlc;end" class="btn-play-stream" style="padding: 10px 22px; font-size: 14px; border-radius: 99px; text-decoration: none;">▶️ Open in VLC</a>
+                        </div>
                     </div>
                 `;
-                vlcBtn.style.display = 'block';
-                vlcBtn.href = `/download?u=${{encodeURIComponent(url)}}&title=${{encodeURIComponent(title || 'Video')}}`;
-                vlcBtn.innerHTML = '⬇️ Direct Download Video to Phone';
+                vlcBtn.style.display = 'none';
             }}
         }}
 

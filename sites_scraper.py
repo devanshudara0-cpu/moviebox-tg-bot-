@@ -528,8 +528,8 @@ def get_ott_details(item_id: str) -> dict:
 
     streams = [
         {"quality": "1080p", "resolution": 1080, "size_str": "Server 1 (Ultra HD Fast)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidsrc.su/embed/movie/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Server 2 (Cloud Player)", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Server 3 (Backup HD)", "language": "Multi", "url": f"https://autoembed.to/movie/imdb/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 2 (Fast Stream)", "language": "Multi-Audio", "url": f"https://vidsrc.pm/embed/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 3 (Cloud Player)", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
     ]
     return {
         "title": title,
@@ -551,7 +551,7 @@ def get_ott_episode_streams(item_id: str, season: int, episode: int) -> dict:
     imdb_id = parts[1] if len(parts) >= 2 else item_id
     streams = [
         {"quality": "1080p", "resolution": 1080, "size_str": "Server 1 (Ultra HD Fast)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidsrc.su/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Server 2 (Cloud Player)", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Server 3 (Backup HD)", "language": "Multi-Sub", "url": f"https://autoembed.to/tv/imdb/{imdb_id}-{season}-{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 2 (Fast Stream)", "language": "Multi-Audio", "url": f"https://vidsrc.pm/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Server 3 (Cloud Player)", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
     ]
     return {"streams": streams, "captions": []}
