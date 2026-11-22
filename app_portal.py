@@ -11,12 +11,12 @@ def get_manifest_json():
         "theme_color": "#e50914",
         "icons": [
             {
-                "src": "https://cdn-icons-png.flaticon.com/512/2503/2503508.png",
+                "src": "/logo.png",
                 "sizes": "192x192",
                 "type": "image/png"
             },
             {
-                "src": "https://cdn-icons-png.flaticon.com/512/2503/2503508.png",
+                "src": "/logo.png",
                 "sizes": "512x512",
                 "type": "image/png"
             }
@@ -44,7 +44,7 @@ def get_download_page_html(base_url: str):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Download ST×LEO OTT App - Android APK & WebAPK</title>
-    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/2503/2503508.png">
+    <link rel="icon" href="{base_url}/logo.png">
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -146,7 +146,7 @@ def get_download_page_html(base_url: str):
 </head>
 <body>
     <div class="card">
-        <img class="logo" src="https://cdn-icons-png.flaticon.com/512/2503/2503508.png" alt="ST×LEO OTT">
+        <img class="logo" src="{base_url}/logo.png" alt="ST×LEO OTT">
         <h1>ST×LEO OTT</h1>
         <div class="dev-badge">Developed by Devanshu (@Dara_OG)</div>
         <p class="desc">
@@ -187,7 +187,7 @@ def get_web_app_html(base_url: str):
     <title>ST×LEO OTT - Stream Movies & Series</title>
     <meta name="theme-color" content="#e50914">
     <link rel="manifest" href="{base_url}/manifest.json">
-    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/2503/2503508.png">
+    <link rel="icon" href="{base_url}/logo.png">
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -197,6 +197,8 @@ def get_web_app_html(base_url: str):
             min-height: 100vh;
             padding-bottom: 60px;
             overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior-y: none;
         }}
         header {{
             position: sticky;
@@ -218,9 +220,10 @@ def get_web_app_html(base_url: str):
             color: inherit;
         }}
         .brand img {{
-            width: 34px;
-            height: 34px;
-            border-radius: 8px;
+            width: 36px;
+            height: 36px;
+            border-radius: 9px;
+            box-shadow: 0 4px 12px rgba(229, 9, 20, 0.3);
         }}
         .brand-text h1 {{
             font-size: 18px;
@@ -350,6 +353,8 @@ def get_web_app_html(base_url: str):
             grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
             gap: 12px;
             padding: 8px 18px;
+            transform: translateZ(0);
+            will-change: transform;
         }}
         @media (min-width: 600px) {{
             .grid {{ grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 16px; }}
@@ -360,8 +365,11 @@ def get_web_app_html(base_url: str):
             overflow: hidden;
             border: 1px solid rgba(255, 255, 255, 0.05);
             cursor: pointer;
-            transition: transform 0.2s ease;
+            transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
             position: relative;
+            transform: translateZ(0);
+            will-change: transform;
+            contain: content;
         }}
         .card:hover {{ transform: translateY(-4px); }}
         .poster {{
@@ -648,6 +656,28 @@ def get_web_app_html(base_url: str):
             }}
         }}
 
+        function getFallbackPoster(title, year) {{
+            const cleanTitle = (title || 'ST×LEO OTT').replace(/['"<>&]/g, ' ').trim().slice(0, 30);
+            const yr = year || 'HD';
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450">
+                <defs>
+                    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#0b0f19"/>
+                        <stop offset="60%" stop-color="#18182b"/>
+                        <stop offset="100%" stop-color="#831843"/>
+                    </linearGradient>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#bg)"/>
+                <circle cx="150" cy="180" r="48" fill="rgba(229,9,20,0.25)" stroke="#e50914" stroke-width="3"/>
+                <polygon points="142,160 142,200 172,180" fill="#ffffff"/>
+                <rect x="20" y="20" width="70" height="24" rx="6" fill="#e50914"/>
+                <text x="55" y="36" fill="#fff" font-size="11" font-weight="bold" font-family="sans-serif" text-anchor="middle">${{yr}}</text>
+                <text x="150" y="280" fill="#ffffff" font-size="16" font-weight="bold" font-family="sans-serif" text-anchor="middle">${{cleanTitle}}</text>
+                <text x="150" y="310" fill="#fb7185" font-size="12" font-weight="600" font-family="sans-serif" text-anchor="middle">ST×LEO OTT</text>
+            </svg>`;
+            return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }}
+
         function renderCards(items) {{
             if (!items || items.length === 0) {{
                 grid.innerHTML = '<div style="padding:30px;color:#94a3b8;grid-column: 1/-1;text-align:center">No titles found. Try searching on another server.</div>';
@@ -655,15 +685,16 @@ def get_web_app_html(base_url: str):
             }}
             grid.innerHTML = items.map((it, idx) => {{
                 let poster = it.poster;
-                if (!poster || !poster.startsWith('http')) {{
+                if (!poster || !poster.startsWith('http') || poster.includes('flaticon') || poster.includes('placeholder')) {{
                     const m = String(it.id || '').match(/tt\\d+/);
-                    poster = m ? `https://images.metahub.space/poster/small/${{m[0]}}/img` : 'https://cdn-icons-png.flaticon.com/512/2503/2503508.png';
+                    poster = m ? `https://images.metahub.space/poster/small/${{m[0]}}/img` : getFallbackPoster(it.title, it.year);
                 }}
                 const yr = it.year ? it.year : '';
                 const tp = it.type ? it.type : 'Movie';
+                const safeTitle = (it.title || '').replace(/'/g, "\\\\'");
                 return `
                 <div class="card" onclick="openDetails('${{it.provider || currentProv}}', '${{encodeURIComponent(it.id)}}')">
-                    <img class="poster" src="${{poster}}" alt="${{it.title}}" onerror="this.src='https://cdn-icons-png.flaticon.com/512/2503/2503508.png'">
+                    <img class="poster" src="${{poster}}" alt="${{it.title}}" loading="lazy" onerror="this.onerror=null;this.src=getFallbackPoster('${{safeTitle}}', '${{it.year||''}}');">
                     <div class="card-info">
                         <div class="card-title">${{it.title}}</div>
                         <div class="card-meta">
@@ -772,7 +803,7 @@ def get_web_app_html(base_url: str):
             const isEmbed = url.includes('embed') || url.includes('vidsrc') || url.includes('autoembed') || url.includes('multiembed') || url.includes('vidlink') || url.includes('2embed');
 
             if (isEmbed) {{
-                p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen" referrerpolicy="no-referrer"></iframe>`;
+                p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe>`;
                 vlcBtn.style.display = 'block';
                 vlcBtn.href = url;
                 vlcBtn.innerText = '🌐 Open Stream in Fullscreen Browser';

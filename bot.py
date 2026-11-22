@@ -107,6 +107,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
                 return
             self.send_response(404); self.end_headers(); return
+        if clean_path in ("/logo.png", "/icon.png", "/favicon.ico"):
+            logo_path = os.path.abspath("app_logo.png")
+            if not os.path.exists(logo_path):
+                logo_path = "/storage/emulated/0/12/moviebox-tg-bot--main/app_logo.png"
+            if os.path.exists(logo_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Content-Length", str(os.path.getsize(logo_path)))
+                self.end_headers()
+                with open(logo_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.send_response(404); self.end_headers(); return
         if clean_path == "/manifest.json":
             self.send_response(200); self.send_header("Content-Type", "application/manifest+json; charset=utf-8"); self.end_headers()
             self.wfile.write(app_portal.get_manifest_json().encode()); return

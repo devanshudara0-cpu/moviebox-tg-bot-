@@ -110,31 +110,61 @@ def search_wordpress(provider_key: str, domain: str, query: str) -> list:
     if not html:
         return results
 
-    entries = re.findall(r'<article[^>]*>.*?<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>.*?</article>', html, re.DOTALL)
-    if not entries:
-        entries = re.findall(r'<h[1-4][^>]*class=["\']?[^"\'>]*entry-title[^"\'>]*["\']?[^>]*>\s*<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.DOTALL)
-    if not entries:
-        entries = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*title=["\']([^"\']+)["\']', html, re.DOTALL)
-
+    articles = re.findall(r'<article[^>]*>([\s\S]*?)</article>', html)
     seen = set()
-    for link, raw_title in entries:
-        if link in seen or any(bad in link for bad in ["/category/", "/tag/", "/page/", "/author/", "/wp-content/", "/feed/"]):
-            continue
-        seen.add(link)
-        title = re.sub(r"<[^>]+>", " ", raw_title).strip()
-        title = " ".join(title.split())
-        if not title or len(title) < 3:
-            continue
-        year_match = re.search(r"\b(19\d\d|20\d\d)\b", title)
-        year = int(year_match.group(1)) if year_match else None
-        is_series = "season" in title.lower() or "s0" in title.lower() or "series" in title.lower()
-        results.append({
-            "provider": provider_key,
-            "title": title,
-            "id": link,
-            "type": "Series" if is_series else "Movie",
-            "year": year,
-        })
+    if articles:
+        for art in articles:
+            m_link = re.search(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', art, re.DOTALL)
+            if not m_link:
+                continue
+            link = m_link.group(1)
+            if link in seen or any(bad in link for bad in ["/category/", "/tag/", "/page/", "/author/", "/wp-content/", "/feed/"]):
+                continue
+            seen.add(link)
+
+            title_m = re.search(r'<h[1-4][^>]*class=["\']?[^"\'>]*entry-title[^"\'>]*["\']?[^>]*>\s*<a[^>]*>(.*?)</a>', art, re.DOTALL)
+            raw_title = title_m.group(1) if title_m else m_link.group(2)
+            title = re.sub(r"<[^>]+>", " ", raw_title).strip()
+            title = " ".join(title.split())
+            if not title or len(title) < 3:
+                continue
+
+            img_m = re.search(r'<img[^>]+(?:data-src|data-lazy-src|src)=["\'](https?://[^"\']+)["\']', art)
+            poster = img_m.group(1) if img_m else None
+
+            year_match = re.search(r"\b(19\d\d|20\d\d)\b", title)
+            year = int(year_match.group(1)) if year_match else None
+            is_series = "season" in title.lower() or "s0" in title.lower() or "series" in title.lower()
+            results.append({
+                "provider": provider_key,
+                "title": title,
+                "id": link,
+                "type": "Series" if is_series else "Movie",
+                "year": year,
+                "poster": poster,
+            })
+
+    if not results:
+        entries = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*title=["\']([^"\']+)["\']', html)
+        for link, raw_title in entries:
+            if link in seen or any(bad in link for bad in ["/category/", "/tag/", "/page/", "/author/", "/wp-content/", "/feed/"]):
+                continue
+            seen.add(link)
+            title = re.sub(r"<[^>]+>", " ", raw_title).strip()
+            title = " ".join(title.split())
+            if not title or len(title) < 3:
+                continue
+            year_match = re.search(r"\b(19\d\d|20\d\d)\b", title)
+            year = int(year_match.group(1)) if year_match else None
+            is_series = "season" in title.lower() or "s0" in title.lower() or "series" in title.lower()
+            results.append({
+                "provider": provider_key,
+                "title": title,
+                "id": link,
+                "type": "Series" if is_series else "Movie",
+                "year": year,
+                "poster": None,
+            })
     return results
 
 def search_custom_provider(prov: str, query: str) -> list:
@@ -496,10 +526,10 @@ def get_ott_details(item_id: str) -> dict:
         }
 
     streams = [
-        {"quality": "1080p", "resolution": 1080, "size_str": "AutoEmbed HD", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://autoembed.co/movie/imdb/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "VidLink Fast", "language": "Multi-Sub", "url": f"https://vidlink.pro/movie/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "2Embed Cloud", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
-        {"quality": "720p", "resolution": 720, "size_str": "VidSrc Fast", "language": "Multi", "url": f"https://vidsrc.to/embed/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 1 (1080p Ultra HD)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidlink.pro/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 2 (Fast HD)", "language": "Multi-Sub", "url": f"https://vidsrc.cc/v2/embed/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 3 (Cloud Server)", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
+        {"quality": "720p", "resolution": 720, "size_str": "Stream 4 (Backup Server)", "language": "Multi", "url": f"https://autoembed.co/movie/imdb/{imdb_id}", "format": "hls"},
     ]
     return {
         "title": title,
@@ -520,8 +550,9 @@ def get_ott_episode_streams(item_id: str, season: int, episode: int) -> dict:
     parts = item_id.split("_")
     imdb_id = parts[1] if len(parts) >= 2 else item_id
     streams = [
-        {"quality": "1080p", "resolution": 1080, "size_str": "AutoEmbed HD", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://autoembed.co/tv/imdb/{imdb_id}-{season}-{episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "2Embed Cloud", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "VidSrc TV", "language": "Multi-Sub", "url": f"https://vidsrc.to/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 1 (1080p Ultra HD)", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://vidlink.pro/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 2 (Fast HD)", "language": "Multi-Sub", "url": f"https://vidsrc.cc/v2/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "Stream 3 (Cloud Server)", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
+        {"quality": "720p", "resolution": 720, "size_str": "Stream 4 (Backup Server)", "language": "Multi-Sub", "url": f"https://autoembed.co/tv/imdb/{imdb_id}-{season}-{episode}", "format": "hls"},
     ]
     return {"streams": streams, "captions": []}
