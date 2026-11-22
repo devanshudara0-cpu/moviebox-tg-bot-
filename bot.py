@@ -35,13 +35,28 @@ def allowed(uid): return uid == ADMIN_ID or uid in load_users()
 def esc(v): return html.escape(str(v or ""))
 
 def filter_results(items, query):
+    if not items:
+        return []
     qw = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 1]
     clean = [x for x in items if not any(b in x.get("title", "").lower() for b in ("xxx", "parody"))]
-    if not qw: return clean[:10]
-    exact = [x for x in clean if all(w in x.get("title", "").lower() for w in qw)]
-    pool = exact if exact else clean
-    pool.sort(key=lambda x: (0 if x.get("title", "").lower().startswith(query.lower()) else 1, len(x.get("title", ""))))
-    return pool[:10]
+    if not qw:
+        return clean[:15]
+    scored = []
+    q_low = query.lower().strip()
+    for x in clean:
+        t_low = x.get("title", "").lower()
+        score = 0
+        if t_low.startswith(q_low):
+            score += 100
+        elif q_low in t_low:
+            score += 50
+        matches = sum(1 for w in qw if w in t_low)
+        score += matches * 10
+        if matches > 0 or score > 0:
+            scored.append((score, x))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    res = [x for _, x in scored]
+    return res[:15] if res else clean[:15]
 
 async def resolve_server2_streams(uid: int, raw_streams: list, client: AsyncMediaClient = None):
     """Preserve MovieBox-Tui bridge streams and headers for HDHub, ensuring direct VLC playback."""
@@ -193,9 +208,26 @@ async def safe_edit(q, text, markup=None, force_text=False):
     elif q.message.photo: await q.edit_message_caption(caption=text[:1020], reply_markup=markup, parse_mode="HTML")
     else: await q.edit_message_text(text=text[:4090], reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
 
+def ensure_bridge():
+    if not os.path.exists(BRIDGE) or not os.access(BRIDGE, os.X_OK):
+        logger.info("tg_bridge not found or not executable, downloading...")
+        try:
+            import urllib.request
+            url = "https://github.com/devanshudara0-cpu/moviebox-tg-bot-/releases/latest/download/tg_bridge"
+            urllib.request.urlretrieve(url, BRIDGE)
+            os.chmod(BRIDGE, 0o755)
+            logger.info("tg_bridge downloaded successfully!")
+        except Exception as e:
+            logger.error("Failed to download tg_bridge: %s", e)
+
 async def run_bridge(*args):
-    res = await asyncio.to_thread(subprocess.run, [BRIDGE, *args], capture_output=True, text=True, timeout=90)
-    return {"error": res.stderr[:800] or "Bridge error"} if res.returncode != 0 else json.loads(res.stdout)
+    ensure_bridge()
+    try:
+        res = await asyncio.to_thread(subprocess.run, [BRIDGE, *args], capture_output=True, text=True, timeout=90)
+        return {"error": res.stderr[:800] or "Bridge error"} if res.returncode != 0 else json.loads(res.stdout)
+    except Exception as exc:
+        logger.error("run_bridge failed: %s", exc)
+        return {"error": str(exc)}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -253,28 +285,46 @@ def results_kb(results, prov=None):
     return InlineKeyboardMarkup(kb)
 
 async def do_search(msg_obj, uid, query, prov="moviebox", edit=False):
-    SESSIONS[uid] = {"query": query, "prov": prov}
-    if prov in ("vegamovies", "katmovieshd", "rogmovies"):
-        custom_results = await asyncio.to_thread(sites_scraper.search_custom_provider, prov, query)
-        data = {"results": custom_results}
-    else:
-        data = await run_bridge("search", prov, query)
-    results = filter_results(data.get("results", []), query)
-    SESSIONS[uid]["results"] = results
-    lbl = dict(PROVIDERS).get(prov, prov)
-    if data.get("error"): text = f"🔎 <b>{esc(query)}</b> • <code>{lbl}</code>\n❌ {esc(data['error'])}{FOOTER}"
-    elif not results: text = f"🔎 <b>{esc(query)}</b> • <code>{lbl}</code>\n😕 No exact match. Try another server:{FOOTER}"
-    else: text = f"🍿 <b>Search Results</b> • <code>{lbl}</code>\n🔎 <i>{esc(query)}</i>\n\nPick a title below:{FOOTER}"
-    markup = results_kb(results, prov)
-    await (msg_obj.edit_text(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True) if edit else msg_obj.reply_text(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True))
+    try:
+        SESSIONS[uid] = {"query": query, "prov": prov}
+        if prov in ("vegamovies", "katmovieshd", "rogmovies"):
+            custom_results = await asyncio.to_thread(sites_scraper.search_custom_provider, prov, query)
+            data = {"results": custom_results}
+        elif prov == "fourkhdhub":
+            data = await run_bridge("search", prov, query)
+            if not data.get("results"):
+                custom_results = await asyncio.to_thread(sites_scraper.search_custom_provider, "hdhub4u", query)
+                if custom_results:
+                    data = {"results": custom_results}
+        else:
+            data = await run_bridge("search", prov, query)
+        results = filter_results(data.get("results", []), query)
+        SESSIONS[uid]["results"] = results
+        lbl = dict(PROVIDERS).get(prov, prov)
+        if data.get("error"): text = f"🔎 <b>{esc(query)}</b> • <code>{lbl}</code>\n❌ {esc(data['error'])}{FOOTER}"
+        elif not results: text = f"🔎 <b>{esc(query)}</b> • <code>{lbl}</code>\n😕 No exact match. Try another server:{FOOTER}"
+        else: text = f"🍿 <b>Search Results</b> • <code>{lbl}</code>\n🔎 <i>{esc(query)}</i>\n\nPick a title below:{FOOTER}"
+        markup = results_kb(results, prov)
+        await (msg_obj.edit_text(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True) if edit else msg_obj.reply_text(text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True))
+    except Exception as exc:
+        logger.error("do_search error: %s", exc)
+        await msg_obj.reply_text(f"❌ Error during search: <code>{esc(str(exc))}</code>{FOOTER}", parse_mode="HTML")
 
 async def trending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not allowed(uid): return
-    results = (await run_bridge("trending")).get("results", [])
-    SESSIONS[uid] = {"query": "Trending", "prov": "moviebox", "results": results}
-    if not results: await update.message.reply_text(f"❌ Could not load trending.{FOOTER}", parse_mode="HTML"); return
-    await update.message.reply_text(f"🔥 <b>Trending Now</b>{FOOTER}", reply_markup=results_kb(results), parse_mode="HTML", disable_web_page_preview=True)
+    try:
+        data = await run_bridge("trending")
+        results = data.get("results", [])
+        SESSIONS[uid] = {"query": "Trending", "prov": "moviebox", "results": results}
+        if not results:
+            err = data.get("error", "Could not load trending.")
+            await update.message.reply_text(f"❌ {esc(err)}{FOOTER}", parse_mode="HTML")
+            return
+        await update.message.reply_text(f"🔥 <b>Trending Now</b>{FOOTER}", reply_markup=results_kb(results), parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as exc:
+        logger.error("trending_cmd error: %s", exc)
+        await update.message.reply_text(f"❌ Error: <code>{esc(str(exc))}</code>{FOOTER}", parse_mode="HTML")
 
 async def fav_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -383,7 +433,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("m:"):
             item = sess["results"][int(data.split(":")[1])]; sess["item"] = item
             await safe_edit(q, f"⏳ Loading <b>{esc(item['title'])}</b>...{FOOTER}")
-            if item.get("provider") in ("vegamovies", "katmovieshd", "rogmovies"):
+            if item.get("provider") in ("vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
                 d = await asyncio.to_thread(sites_scraper.get_custom_details, item["provider"], item["id"])
             else:
                 d = await run_bridge("details", item["provider"], item["id"])
@@ -405,7 +455,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("dub:"):
             dub = sess["dubs"][int(data.split(":")[1])]
             await safe_edit(q, f"⏳ Loading <b>{esc(dub.get('label') or dub.get('language'))}</b>...{FOOTER}")
-            if sess["item"].get("provider") in ("vegamovies", "katmovieshd", "rogmovies"):
+            if sess["item"].get("provider") in ("vegamovies", "katmovieshd", "rogmovies", "hdhub4u"):
                 d = dict(sess.get("details_raw", {}))
                 d["streams"] = dedupe_streams(dub.get("streams", []))
             else:
@@ -500,5 +550,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("movie", movie_search))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    ensure_bridge()
     app.run_polling()
         

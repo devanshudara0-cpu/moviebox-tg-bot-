@@ -109,14 +109,21 @@ def search_wordpress(provider_key: str, domain: str, query: str) -> list:
     results = []
     if not html:
         return results
-    articles = re.findall(r'<article[^>]*>.*?<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>.*?</article>', html, re.DOTALL)
+
+    entries = re.findall(r'<article[^>]*>.*?<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>.*?</article>', html, re.DOTALL)
+    if not entries:
+        entries = re.findall(r'<h[1-4][^>]*class=["\']?[^"\'>]*entry-title[^"\'>]*["\']?[^>]*>\s*<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>', html, re.DOTALL)
+    if not entries:
+        entries = re.findall(r'<a[^>]+href=["\'](https?://[^"\']+)["\'][^>]*title=["\']([^"\']+)["\']', html, re.DOTALL)
+
     seen = set()
-    for link, raw_title in articles:
-        if link in seen:
+    for link, raw_title in entries:
+        if link in seen or any(bad in link for bad in ["/category/", "/tag/", "/page/", "/author/", "/wp-content/", "/feed/"]):
             continue
         seen.add(link)
-        title = re.sub(r"<[^>]+>", "", raw_title).strip()
-        if not title:
+        title = re.sub(r"<[^>]+>", " ", raw_title).strip()
+        title = " ".join(title.split())
+        if not title or len(title) < 3:
             continue
         year_match = re.search(r"\b(19\d\d|20\d\d)\b", title)
         year = int(year_match.group(1)) if year_match else None
@@ -135,13 +142,16 @@ def search_custom_provider(prov: str, query: str) -> list:
     if not domain:
         return []
     if prov in ("vegamovies", "rogmovies"):
-        res = search_ts_backend(prov, domain, query)
-        if res:
-            return res
-        return search_wordpress(prov, domain, query)
-    elif prov == "katmovieshd":
-        return search_wordpress(prov, domain, query)
-    elif prov == "hdhub4u":
+        ts_res = search_ts_backend(prov, domain, query)
+        wp_res = search_wordpress(prov, domain, query)
+        seen = set()
+        combined = []
+        for r in (ts_res + wp_res):
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                combined.append(r)
+        return combined
+    elif prov in ("katmovieshd", "hdhub4u"):
         return search_wordpress(prov, domain, query)
     return []
 
