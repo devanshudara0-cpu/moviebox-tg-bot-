@@ -17,12 +17,12 @@ BASE_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://leo-final-boss.onrende
 HOST = BASE_URL.replace("https://", "").replace("http://", "")
 FOOTER = '\n\n⚡ <i>Made by <a href="https://t.me/Dara_OG">@Dara_OG</a></i>'
 PROVIDERS = [
-    ("ottstream", "⚡ Server 0 (OTT)"),
-    ("moviebox", "Server 1"),
-    ("fourkhdhub", "Server 2"),
-    ("vegamovies", "Server 3"),
-    ("katmovieshd", "Server 4"),
-    ("rogmovies", "Server 5"),
+    ("ottstream", "Server 1"),
+    ("moviebox", "Server 2"),
+    ("fourkhdhub", "Server 3"),
+    ("vegamovies", "Server 4"),
+    ("katmovieshd", "Server 5"),
+    ("rogmovies", "Server 6"),
 ]
 SESSIONS, STREAMS_CACHE = {}, {}
 MEDIA_SESSIONS = SessionStore()
@@ -93,6 +93,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if clean_path == "/app/download":
             self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.end_headers()
             self.wfile.write(app_portal.get_download_page_html(BASE_URL).encode()); return
+        if clean_path == "/STxLEO_OTT.apk":
+            apk_path = os.path.abspath("STxLEO_OTT.apk")
+            if not os.path.exists(apk_path):
+                apk_path = "/storage/emulated/0/Download/STxLEO_OTT.apk"
+            if os.path.exists(apk_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.android.package-archive")
+                self.send_header("Content-Disposition", 'attachment; filename="STxLEO_OTT.apk"')
+                self.send_header("Content-Length", str(os.path.getsize(apk_path)))
+                self.end_headers()
+                with open(apk_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+            self.send_response(404); self.end_headers(); return
         if clean_path == "/manifest.json":
             self.send_response(200); self.send_header("Content-Type", "application/manifest+json; charset=utf-8"); self.end_headers()
             self.wfile.write(app_portal.get_manifest_json().encode()); return
@@ -192,7 +206,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     f'<body><div class="card">'
                     f'<div class="badge">⚡ ST×LEO OTT LIVE • {esc(info["qual"])}</div>'
                     f'<h2 style="margin:4px 0 8px">🎬 {esc(info["title"])}</h2>'
-                    f'<div class="player"><iframe src="{esc(info["url"])}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture"></iframe></div>'
+                    f'<div class="player"><iframe src="{esc(info["url"])}" allowfullscreen allow="autoplay; fullscreen; picture-in-picture" referrerpolicy="no-referrer"></iframe></div>'
                     f'<a class="btn v" href="{esc(info["url"])}" target="_blank">▶️ Open Fullscreen in Browser</a>'
                     f'<a class="btn v2" href="/app">📱 Back to ST×LEO App</a>'
                     f'<div class="ft"><a href="https://t.me/Dara_OG">⚡ Developed by Devanshu (@Dara_OG)</a></div>'

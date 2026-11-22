@@ -4,7 +4,7 @@ def get_manifest_json():
     return json.dumps({
         "name": "ST×LEO OTT",
         "short_name": "ST×LEO",
-        "description": "Stream Netflix, Prime, Hotstar & Latest Movies without download",
+        "description": "Stream Movies & Series Live without download",
         "start_url": "/app",
         "display": "standalone",
         "background_color": "#090d16",
@@ -25,7 +25,7 @@ def get_manifest_json():
 
 def get_sw_js():
     return """
-const CACHE_NAME = 'stleo-ott-v1';
+const CACHE_NAME = 'stleo-ott-v2';
 self.addEventListener('install', (e) => {
     self.skipWaiting();
 });
@@ -150,10 +150,10 @@ def get_download_page_html(base_url: str):
         <h1>ST×LEO OTT</h1>
         <div class="dev-badge">Developed by Devanshu (@Dara_OG)</div>
         <p class="desc">
-            Netflix, Prime Video, Hotstar aur Latest Movies & Webseries ko bina kisi download aur login ke seedha HD / 4K me stream karein!
+            Latest Movies & Webseries ko bina kisi download aur login ke seedha HD / 4K me stream karein!
         </p>
 
-        <a class="btn btn-apk" href="https://github.com/devanshudara0-cpu/moviebox-tg-bot-/releases/latest/download/STxLEO_OTT.apk">
+        <a class="btn btn-apk" href="{base_url}/STxLEO_OTT.apk" download="STxLEO_OTT.apk">
             📲 Download Android APK (.apk)
         </a>
 
@@ -166,11 +166,10 @@ def get_download_page_html(base_url: str):
         </a>
 
         <div class="steps">
-            <strong>💡 How to Install Web App on Home Screen:</strong>
+            <strong>💡 How to Install on Phone:</strong>
             <ol>
-                <li>Tap <b>Open Web App</b> above.</li>
-                <li>Tap Chrome ⋮ (Three Dots) on top right.</li>
-                <li>Select <b>"Add to Home Screen"</b> / <b>"Install App"</b>.</li>
+                <li>Tap <b>Download Android APK</b> to install the real app.</li>
+                <li>Or tap <b>Open Web App</b> ➔ Chrome menu ⋮ ➔ <b>"Install App"</b>.</li>
                 <li>App phone me real app ki tarah install ho jayegi!</li>
             </ol>
         </div>
@@ -319,10 +318,10 @@ def get_web_app_html(base_url: str):
             background: #1e293b;
             color: #94a3b8;
             border: 1px solid #334155;
-            padding: 8px 14px;
+            padding: 8px 16px;
             border-radius: 99px;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
             white-space: nowrap;
             transition: all 0.2s ease;
@@ -344,6 +343,7 @@ def get_web_app_html(base_url: str):
         .section-title span {{
             font-size: 12px;
             color: #fb7185;
+            font-weight: 700;
         }}
         .grid {{
             display: grid;
@@ -532,27 +532,27 @@ def get_web_app_html(base_url: str):
 
     <div class="hero">
         <h2>Watch Movies & Series Live</h2>
-        <p>Netflix, Prime Video, Hotstar & 5 Servers without download!</p>
+        <p>Latest Movies & Webseries without download!</p>
         <div class="search-container">
             <div class="search-bar">
-                <input type="text" id="query-input" placeholder="Search Netflix, Prime, Hotstar, Anime...">
+                <input type="text" id="query-input" placeholder="Type movie or series name...">
                 <button onclick="doSearch()">Search</button>
             </div>
         </div>
     </div>
 
     <div class="server-tabs">
-        <div class="tab active" data-prov="ottstream" onclick="switchServer('ottstream', this)">⚡ Server 0 (OTT Live)</div>
-        <div class="tab" data-prov="moviebox" onclick="switchServer('moviebox', this)">Server 1 (Moviebox)</div>
-        <div class="tab" data-prov="fourkhdhub" onclick="switchServer('fourkhdhub', this)">Server 2 (HDHub4u)</div>
-        <div class="tab" data-prov="vegamovies" onclick="switchServer('vegamovies', this)">Server 3 (VegaMovies)</div>
-        <div class="tab" data-prov="katmovieshd" onclick="switchServer('katmovieshd', this)">Server 4 (KatMovies)</div>
-        <div class="tab" data-prov="rogmovies" onclick="switchServer('rogmovies', this)">Server 5 (RogMovies)</div>
+        <div class="tab active" data-prov="ottstream" onclick="switchServer('ottstream', this)">Server 1</div>
+        <div class="tab" data-prov="moviebox" onclick="switchServer('moviebox', this)">Server 2</div>
+        <div class="tab" data-prov="fourkhdhub" onclick="switchServer('fourkhdhub', this)">Server 3</div>
+        <div class="tab" data-prov="vegamovies" onclick="switchServer('vegamovies', this)">Server 4</div>
+        <div class="tab" data-prov="katmovieshd" onclick="switchServer('katmovieshd', this)">Server 5</div>
+        <div class="tab" data-prov="rogmovies" onclick="switchServer('rogmovies', this)">Server 6</div>
     </div>
 
     <div class="section-title">
-        <h3 id="section-heading">🔥 Trending & Popular Titles</h3>
-        <span>LIVE OTT</span>
+        <h3 id="section-heading">🔥 Popular & Trending Titles</h3>
+        <span>LIVE</span>
     </div>
 
     <div id="loading" class="spinner">⏳ Loading content...</div>
@@ -634,7 +634,7 @@ def get_web_app_html(base_url: str):
         async function doSearch() {{
             const q = document.getElementById('query-input').value.trim();
             if (!q) return;
-            document.getElementById('section-heading').innerText = `🔎 Search Results for "${{q}}"`;
+            document.getElementById('section-heading').innerText = `🔎 Results for "${{q}}"`;
             loading.style.display = 'block';
             grid.innerHTML = '';
             try {{
@@ -642,7 +642,7 @@ def get_web_app_html(base_url: str):
                 const data = await res.json();
                 renderCards(data.results || []);
             }} catch (e) {{
-                grid.innerHTML = '<div style="padding:20px;color:#94a3b8">Search failed. Please try another server.</div>';
+                grid.innerHTML = '<div style="padding:20px;color:#94a3b8">Search failed. Try another server.</div>';
             }} finally {{
                 loading.style.display = 'none';
             }}
@@ -653,18 +653,26 @@ def get_web_app_html(base_url: str):
                 grid.innerHTML = '<div style="padding:30px;color:#94a3b8;grid-column: 1/-1;text-align:center">No titles found. Try searching on another server.</div>';
                 return;
             }}
-            grid.innerHTML = items.map((it, idx) => `
+            grid.innerHTML = items.map((it, idx) => {{
+                let poster = it.poster;
+                if (!poster || !poster.startsWith('http')) {{
+                    const m = String(it.id || '').match(/tt\\d+/);
+                    poster = m ? `https://images.metahub.space/poster/small/${{m[0]}}/img` : 'https://cdn-icons-png.flaticon.com/512/2503/2503508.png';
+                }}
+                const yr = it.year ? it.year : '';
+                const tp = it.type ? it.type : 'Movie';
+                return `
                 <div class="card" onclick="openDetails('${{it.provider || currentProv}}', '${{encodeURIComponent(it.id)}}')">
-                    <img class="poster" src="${{it.poster || 'https://images.metahub.space/poster/small/' + (it.id.includes('tt') ? it.id : 'tt0000000') + '/img'}}" alt="${{it.title}}" onerror="this.src='https://cdn-icons-png.flaticon.com/512/2503/2503508.png'">
+                    <img class="poster" src="${{poster}}" alt="${{it.title}}" onerror="this.src='https://cdn-icons-png.flaticon.com/512/2503/2503508.png'">
                     <div class="card-info">
                         <div class="card-title">${{it.title}}</div>
                         <div class="card-meta">
-                            <span>${{it.year || ''}}</span>
-                            <span class="badge">${{it.type || 'Movie'}}</span>
+                            <span>${{yr}}</span>
+                            <span class="badge">${{tp}}</span>
                         </div>
                     </div>
                 </div>
-            `).join('');
+            `}}).join('');
         }}
 
         let activeDetails = null;
@@ -759,16 +767,31 @@ def get_web_app_html(base_url: str):
         function playStream(url, title) {{
             const p = document.getElementById('player-container');
             const vlcBtn = document.getElementById('vlc-action');
-            if (url.includes('embed') || url.includes('vidsrc') || url.includes('autoembed') || url.includes('multiembed')) {{
-                p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen"></iframe>`;
+            if (!url) return;
+
+            const isEmbed = url.includes('embed') || url.includes('vidsrc') || url.includes('autoembed') || url.includes('multiembed') || url.includes('vidlink') || url.includes('2embed');
+
+            if (isEmbed) {{
+                p.innerHTML = `<iframe src="${{url}}" allowfullscreen allow="autoplay; encrypted-media; fullscreen" referrerpolicy="no-referrer"></iframe>`;
                 vlcBtn.style.display = 'block';
                 vlcBtn.href = url;
-                vlcBtn.innerText = '▶️ Open in External Browser / Fullscreen';
-            }} else {{
+                vlcBtn.innerText = '🌐 Open Stream in Fullscreen Browser';
+            }} else if (url.includes('.mp4') || url.includes('.m3u8') || url.includes('.mpd')) {{
                 p.innerHTML = `<video controls autoplay playsinline src="${{url}}"></video>`;
                 vlcBtn.style.display = 'block';
                 vlcBtn.href = `intent://${{window.location.host}}/play?u=${{encodeURIComponent(url)}}#Intent;scheme=https;package=org.videolan.vlc;type=video/*;end`;
                 vlcBtn.innerText = '▶️ Open in VLC Player';
+            }} else {{
+                p.innerHTML = `
+                    <div style="padding: 40px 20px; text-align: center; color: #f8fafc;">
+                        <h3 style="margin-bottom: 12px; color: #fb7185;">⚡ Cloud Stream / Download Ready</h3>
+                        <p style="font-size: 13px; color: #94a3b8; margin-bottom: 20px;">Tap below to start streaming or download directly:</p>
+                        <a href="${{url}}" target="_blank" style="display: inline-block; background: #e50914; color: #fff; padding: 12px 24px; border-radius: 99px; text-decoration: none; font-weight: 700;">🚀 Open Direct Link</a>
+                    </div>
+                `;
+                vlcBtn.style.display = 'block';
+                vlcBtn.href = url;
+                vlcBtn.innerText = '🚀 Open Direct Link in Browser / Player';
             }}
         }}
 

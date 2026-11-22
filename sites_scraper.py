@@ -496,11 +496,10 @@ def get_ott_details(item_id: str) -> dict:
         }
 
     streams = [
-        {"quality": "1080p", "resolution": 1080, "size_str": "Auto HLS", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://player.autoembed.cc/embed/movie/{imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Super Cloud", "language": "English / Dual", "url": f"https://multiembed.mov/?video_id={imdb_id}", "format": "hls"},
-        {"quality": "720p", "resolution": 720, "size_str": "VidSrc Fast", "language": "Multi-Sub", "url": f"https://vidsrc.xyz/embed/movie?imdb={imdb_id}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "EmbedSu Mirror", "language": "Multi", "url": f"https://embed.su/embed/movie/{imdb_id}", "format": "hls"},
-        {"quality": "720p", "resolution": 720, "size_str": "2Embed Backup", "language": "Original", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "AutoEmbed HD", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://autoembed.co/movie/imdb/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "VidLink Fast", "language": "Multi-Sub", "url": f"https://vidlink.pro/movie/{imdb_id}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "2Embed Cloud", "language": "English / Dual", "url": f"https://www.2embed.cc/embed/{imdb_id}", "format": "hls"},
+        {"quality": "720p", "resolution": 720, "size_str": "VidSrc Fast", "language": "Multi", "url": f"https://vidsrc.to/embed/movie/{imdb_id}", "format": "hls"},
     ]
     return {
         "title": title,
@@ -521,9 +520,8 @@ def get_ott_episode_streams(item_id: str, season: int, episode: int) -> dict:
     parts = item_id.split("_")
     imdb_id = parts[1] if len(parts) >= 2 else item_id
     streams = [
-        {"quality": "1080p", "resolution": 1080, "size_str": "Auto HLS", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://player.autoembed.cc/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "Super Cloud", "language": "English / Dual", "url": f"https://multiembed.mov/?video_id={imdb_id}&s={season}&e={episode}", "format": "hls"},
-        {"quality": "720p", "resolution": 720, "size_str": "VidSrc Fast", "language": "Multi-Sub", "url": f"https://vidsrc.xyz/embed/tv?imdb={imdb_id}&season={season}&episode={episode}", "format": "hls"},
-        {"quality": "1080p", "resolution": 1080, "size_str": "EmbedSu Mirror", "language": "Multi", "url": f"https://embed.su/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "AutoEmbed HD", "language": "Multi-Audio (Hindi/Eng)", "url": f"https://autoembed.co/tv/imdb/{imdb_id}-{season}-{episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "2Embed Cloud", "language": "English / Dual", "url": f"https://www.2embed.cc/embedtv/{imdb_id}&s={season}&e={episode}", "format": "hls"},
+        {"quality": "1080p", "resolution": 1080, "size_str": "VidSrc TV", "language": "Multi-Sub", "url": f"https://vidsrc.to/embed/tv/{imdb_id}/{season}/{episode}", "format": "hls"},
     ]
     return {"streams": streams, "captions": []}
